@@ -15,7 +15,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 #include <SWI-Prolog.h>
 #include <SWI-Stream.h>
-#include <sqlite3.h>
+#include "sqlite3.h"
 
 /* Errors */
 static int
