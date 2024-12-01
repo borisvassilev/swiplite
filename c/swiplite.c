@@ -23,7 +23,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 */
 #include <SWI-Prolog.h>
 #include <SWI-Stream.h>
-#include <sqlite3.h>
+#include "sqlite3.h"
 
 /* Errors */
 static int
