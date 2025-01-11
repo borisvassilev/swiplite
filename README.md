@@ -27,6 +27,7 @@ $ swipl pack install swiplite
 ?- pack_install(swiplite).
 ```
 
+### Installing from source
 The code is available in the public GitHub repository
 <https://github.com/borisvassilev/swiplite>.
 To install from the source, clone the repo and install
@@ -43,14 +44,69 @@ $ git archive --output=swiplite-<version>.tgz <tree-ish>
 $ swipl pack install swiplite-<version>.tgz
 ```
 
-You can use this method specifically if you want to build the
-package using the SQLite amalgamation, currently found on its
-own branch, `sqlite3-amalgamation`:
+### Embedding the SQLite source
+If you prefer to use the SQLite source provided on
+[SQLite's download page](https://www.sqlite.org/download.html),
+you can do it by first checking out its own branch,
+`sqlite3-amalgamation`, then dropping the two files
+`sqlite3.c` and `sqlite3.h` in the `c/` subdirectory.
+
+You can first check the diff:
 ```
-$ git archive --output=swiplite-<version>.tgz sqlite3-amalgamation
+$ git checkout sqlite3-amalgamation
+Switched to branch 'sqlite3-amalgamation'
+Your branch is up to date with 'origin/sqlite3-amalgamation'.
+
+$ git diff main
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+
+# Create the library as a CMake module
+-add_library(swiplite MODULE c/swiplite.c)
++add_library(swiplite MODULE c/swiplite.c c/sqlite3.c)
+
+-find_package(SQLite3 REQUIRED)
+-target_link_libraries(swiplite PRIVATE ${SQLite3_LIBRARIES})
+-target_include_directories(swiplite PRIVATE ${SQLite3_INCLUDE_DIRS})
+
+diff --git a/c/swiplite.c b/c/swiplite.c
+
+ #include <SWI-Prolog.h>
+ #include <SWI-Stream.h>
+-#include <sqlite3.h>
++#include "sqlite3.h"
 ```
 
-This last method uses `c/sqlite3.c` and `c/sqlite3.h`.
+Once you add the two files you will find in the
+[amalgamation](https://www.sqlite.org/amalgamation.html)
+you should see:
+```
+$ git status
+On branch sqlite3-amalgamation
+Your branch is up to date with 'origin/sqlite3-amalgamation'.
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	c/sqlite3.c
+	c/sqlite3.h
+
+nothing added to commit but untracked files present (use "git add" to track)
+```
+
+You can now build and install the library from the local repo
+as [described above](#installing-from-source).
+
+### Smoke test
+To check that you have installed the add-on correctly:
+```
+?- use_module(library(sqlite)).
+true.
+
+?- sqlite_version(V).
+V = '3.47.2'.
+```
+
+The predicate `sqlite_version/1` opens an in-memory SQLite
+database and queries "`Select sqlite_version()`".
 
 ## Background
 There are _many_ alternatives to using the `swiplite` pack.

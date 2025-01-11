@@ -32,9 +32,10 @@ OTHER DEALINGS IN THE SOFTWARE.
             sqlite_expanded_sql/2,
             sqlite_column_names/2,
             sqlite_finalize/1,
-            sqlite_eval/1,
-            sqlite_eval/2,
-            sqlite_eval/4 ]).
+            sqlite_do/1,
+            sqlite_one/2,
+            sqlite_many/4,
+            sqlite_row/2 ]).
 
 /** <module> Prolog bindings for SQLite
 
@@ -54,7 +55,7 @@ naming and semantics to the corresponding functions in the C
 interface. One exception is sqlite_bind/2, which converts values
 from Prolog terms to corresponding
 [SQLite column datatype](https://www.sqlite.org/flextypegood.html).
-Similarly, sqlite_eval/1, sqlite_eval/2, and sqlite_eval/4 wrap
+Similarly, sqlite_do/1, sqlite_one/2, and sqlite_many/4 wrap
 the necessary calls to sqlite3_step() and convert the results of
 =SELECT= queries to Prolog terms.
 
@@ -91,7 +92,7 @@ Unify Version with the version of SQLite currently in use
 sqlite_version(V) :-
     setup_call_cleanup(sqlite_open('', DB, [memory(true)]),
         setup_call_cleanup(sqlite_prepare(DB, "select sqlite_version()", S),
-            sqlite_eval(S, row(V0)),
+            sqlite_one(S, row(V0)),
             sqlite_finalize(S)),
         sqlite_close(DB)),
     atom_string(V, V0).
@@ -101,7 +102,7 @@ sqlite_version(V) :-
           memory(boolean),
           threaded(oneof([single,multi,serialized]))
         ]).
-/** sqlite_open(++File:text, -Connection:blob, ++Options:list) is semidet
+/** sqlite_open(++File:text, -Connection:blob, ++Options:list) is det
 
 Open Connection to the database in File using Options
 
@@ -152,7 +153,7 @@ Close a Connection opened with sqlite_open/3
 @see [`sqlite3_close_v2()`](https://www.sqlite.org/c3ref/close.html)
 */
 
-/** sqlite_prepare(++Connection:blob, ++SQL:text, -Statement:blob) is semidet
+/** sqlite_prepare(++Connection:blob, ++SQL:text, -Statement:blob) is det
 
 Compile Statement from the text in SQL using the database in Connection
 
@@ -264,13 +265,13 @@ in it, Column_names is unified with =|cols()|=.
 @see [`sqlite3_column_count()`](https://www.sqlite.org/c3ref/column_count.html)
 */
 
-/** sqlite_eval(++Statement:blob) is semidet
+/** sqlite_do(++Statement:blob) is det
 
 Evaluate a statement that has no results
 
 For example, =|CREATE|= or =|INSERT|= statements must be
-evaluated using sqlite_eval/1, while a =|SELECT|= needs
-either sqlite_eval/2 or sqlite_eval/4.
+evaluated using sqlite_do/1, while a =|SELECT|= needs
+either sqlite_one/1 or sqlite_many/4.
 
 Statement is reset automatically upon success.
 
@@ -279,7 +280,7 @@ Statement is reset automatically upon success.
 @arg Statement A statement compiled with sqlite_prepare/3
 */
 
-/** sqlite_eval(++Statement:blob, Result:row) is semidet
+/** sqlite_one(++Statement:blob, Result:row) is det
 
 Evaluate a =|SELECT|= statement with exactly one row in the result set
 
@@ -291,7 +292,7 @@ Statement is reset automatically upon success.
 @arg Result A flat term with functor =|row/<number of columns>|=
 */
 
-/** sqlite_eval(++Statement:blob, ?N:nonneg, -R:list(row), ?T) is semidet
+/** sqlite_many(++Statement:blob, ?N:nonneg, -R:list(row), ?T) is det
 
 Evaluate a statement to collect results in the difference list R-T.
 
@@ -303,7 +304,7 @@ Otherwise, fetch up to N result rows in R.
 R and T form a difference list. When there are no more results
 in the result set, T is unified with the empty list `[]`.
 
-A statement evaluated with sqlite_eval/4 *|must be|* explictly
+A statement evaluated with sqlite_many/4 *|must be|* explictly
 reset using sqlite_reset/1 after all rows in the result set have
 been fetched. Until it is reset, consecutive calls will unify N
 with 0 and both R and T with the empty list `[]`.
@@ -314,4 +315,14 @@ with 0 and both R and T with the empty list `[]`.
 @arg T Tail of R
 
 @see [`sqlite3_column_count()`](https://www.sqlite.org/c3ref/column_count.html)
+*/
+
+/** sqlite_row(++Statement:blob, Row:row) is semidet
+
+Get rows from the result set of Statement on backtracking.
+
+If the result set is empty, fail.
+
+@arg Statement A =|SELECT|= statement compiled with sqlite_prepare/3
+@arg Row A row in the result set
 */

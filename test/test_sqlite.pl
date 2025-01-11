@@ -28,7 +28,8 @@ OTHER DEALINGS IN THE SOFTWARE.
 test_sqlite :-
     run_tests([ connection,
                 statement,
-                evaluate ]).
+                evaluate,
+                select ]).
 
 :- begin_tests(connection).
 
@@ -127,7 +128,7 @@ test(prepare_bad_stmt, [
 test(prepare_badly_numbered, [
         setup(sqlite_open(foo, DB, [memory(true)])),
         cleanup(sqlite_close(DB)),
-        error(swiplite_error(_,'anonymous or missing ?NNN parameter')) ]) :-
+        error(swiplite_error('anonymous or missing ?NNN parameter', prepare)) ]) :-
     sqlite_prepare(DB, 'select ?2,?3,?4', _).
 
 test(finalize_not_a_blob, [
@@ -348,10 +349,10 @@ test(create_insert, [
         cleanup((
             sqlite_finalize(S),
             sqlite_close(DB) )) ]) :-
-    sqlite_eval(S),
+    sqlite_do(S),
     setup_call_cleanup(
         sqlite_prepare(DB, 'insert into x values ( 1 )', I),
-        sqlite_eval(I),
+        sqlite_do(I),
         sqlite_finalize(I)).
 
 test(select_noresult, [
@@ -361,8 +362,11 @@ test(select_noresult, [
         cleanup((
             sqlite_finalize(S),
             sqlite_close(DB) )),
-        error(swiplite_error(_, 'non-empty result set'),_) ]) :-
-    sqlite_eval(S).
+        error(swiplite_error('non-empty result set', command),_) ]) :-
+    sqlite_do(S).
+:- end_tests(evaluate).
+
+:- begin_tests(select).
 
 test(select_nocols, [
         setup((
@@ -371,8 +375,8 @@ test(select_nocols, [
         cleanup((
             sqlite_finalize(S),
             sqlite_close(DB) )),
-        error(swiplite_error(_, 'no columns in result set'),_) ]) :-
-    sqlite_eval(S, _).
+        error(swiplite_error('no columns in result set', select_one),_) ]) :-
+    sqlite_one(S,  _).
 
 test(select_norows, [
         setup((
@@ -381,8 +385,8 @@ test(select_norows, [
         cleanup((
             sqlite_finalize(S),
             sqlite_close(DB) )),
-        error(swiplite_error(_, 'no rows in result set'),_) ]) :-
-    sqlite_eval(S, _).
+        error(swiplite_error('no rows in result set', select_one),_) ]) :-
+    sqlite_one(S,  _).
 
 test(select_one, [
         setup((
@@ -392,7 +396,7 @@ test(select_one, [
             sqlite_finalize(S),
             sqlite_close(DB) )),
         true(R == row(1)) ]) :-
-    sqlite_eval(S, R).
+    sqlite_one(S,  R).
 
 test(select_one_instantiated, [
         setup((
@@ -401,7 +405,7 @@ test(select_one_instantiated, [
         cleanup((
             sqlite_finalize(S),
             sqlite_close(DB) )) ]) :-
-    sqlite_eval(S, row(1)).
+    sqlite_one(S,  row(1)).
 
 test(select_one_wrong, [
         setup((
@@ -411,7 +415,7 @@ test(select_one_wrong, [
             sqlite_finalize(S),
             sqlite_close(DB) )),
         fail ]) :-
-    sqlite_eval(S, row(2)).
+    sqlite_one(S,  row(2)).
 
 test(select_one_cols, [
         setup((
@@ -421,13 +425,13 @@ test(select_one_cols, [
             sqlite_finalize(S),
             sqlite_close(DB) )),
         true(R == row([], 1, 2.2, "3,четири")) ]) :-
-    sqlite_eval(S, R).
+    sqlite_one(S,  R).
 
 test(reeval, [
         setup((
             sqlite_open('foo.db', DB, [mode(create)]),
             sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_eval(Create),
+            sqlite_do(Create),
             sqlite_finalize(Create),
             sqlite_prepare(DB, "Begin", Begin),
             sqlite_prepare(DB, "Insert into x values ( ?1 )", Insert),
@@ -438,19 +442,19 @@ test(reeval, [
             sqlite_close(DB),
             delete_file('foo.db') )),
         true(R == row(1, 10 000)) ]) :-
-    sqlite_eval(Begin),
+    sqlite_do(Begin),
     forall(between(1, 10 000, X),
         (   sqlite_bind(Insert, bv(X)),
-            sqlite_eval(Insert)
+            sqlite_do(Insert)
         )),
-    sqlite_eval(End),
-    sqlite_eval(Select, R).
+    sqlite_do(End),
+    sqlite_one(Select,  R).
 
 test(eval_insert_noresult, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
             sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_eval(Create),
+            sqlite_do(Create),
             sqlite_finalize(Create),
             sqlite_prepare(DB, "Insert into x values ( 6 )", Insert),
             sqlite_prepare(DB, "Select y from x", Select) )),
@@ -459,14 +463,14 @@ test(eval_insert_noresult, [
             sqlite_finalize(Select),
             sqlite_close(DB) )),
         true(Six == row(6)) ]) :-
-    sqlite_eval(Insert),
-    sqlite_eval(Select, Six).
+    sqlite_do(Insert),
+    sqlite_one(Select,  Six).
 
 test(select_some_double_use_reset, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
             sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_eval(Create),
+            sqlite_do(Create),
             sqlite_finalize(Create),
             sqlite_prepare(DB, "Insert into x values ( ?1 )", Insert),
             sqlite_prepare(DB,
@@ -481,19 +485,19 @@ test(select_some_double_use_reset, [
             R2 == [row(1),row(3),row(5)], N2 == 3, T2 == [] ]) ]) :-
     forall(between(1,5,X),
         (   sqlite_bind(Insert, bv(X)),
-            sqlite_eval(Insert)
+            sqlite_do(Insert)
         )),
     sqlite_bind(Select, bv(0)),
-    sqlite_eval(Select, N1, R1, T1),
+    sqlite_many(Select,  N1,  R1,  T1),
     sqlite_reset(Select),
     sqlite_bind(Select, bv(1)),
-    sqlite_eval(Select, N2, R2, T2).
+    sqlite_many(Select,  N2,  R2,  T2).
 
 test(select_all_rows, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
             sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_eval(Create),
+            sqlite_do(Create),
             sqlite_finalize(Create),
             sqlite_prepare(DB, "Insert into x values ( ?1 )", Insert),
             sqlite_prepare(DB, "Select y from x order by y asc", Select) )),
@@ -507,15 +511,15 @@ test(select_all_rows, [
             R0 == [] ]) ]) :-
     forall(between(2,5,X),
         (   sqlite_bind(Insert, bv(X)),
-            sqlite_eval(Insert)
+            sqlite_do(Insert)
         )),
-    sqlite_eval(Select, N, R, R0).
+    sqlite_many(Select,  N,  R,  R0).
 
 test(select_more_rows, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
             sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_eval(Create),
+            sqlite_do(Create),
             sqlite_finalize(Create),
             sqlite_prepare(DB, "Insert into x values (1),(2),(3)", Insert),
             sqlite_prepare(DB, "Select y from x order by y asc", Select) )),
@@ -527,16 +531,16 @@ test(select_more_rows, [
             R == [row(1),row(2),row(3)], R0 == [],
             R1 == [], T1 == [],
             N2 == 0, R2 == [], T2 == [] ]) ]) :-
-    sqlite_eval(Insert),
-    sqlite_eval(Select, 10, R, R0),
-    sqlite_eval(Select, 10, R1, T1),
-    sqlite_eval(Select, N2, R2, T2).
+    sqlite_do(Insert),
+    sqlite_many(Select,  10,  R,  R0),
+    sqlite_many(Select,  10,  R1,  T1),
+    sqlite_many(Select,  N2,  R2,  T2).
 
 test(select_some_rows, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
             sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_eval(Create),
+            sqlite_do(Create),
             sqlite_finalize(Create),
             sqlite_prepare(DB, "Insert into x values ( ?1 )", Insert),
             sqlite_prepare(DB, "Select y from x order by y desc", Select) )),
@@ -552,13 +556,90 @@ test(select_some_rows, [
             ]) ]) :-
     forall(between(2,50,X),
         (   sqlite_bind(Insert, bv(X)),
-            sqlite_eval(Insert)
+            sqlite_do(Insert)
         )),
-    sqlite_eval(Select, 3, R, R0),
+    sqlite_many(Select,  3,  R,  R0),
     assertion(var(R0)),
-    sqlite_eval(Select, 1, R0, R1),
+    sqlite_many(Select,  1,  R0,  R1),
     assertion(var(R1)),
-    sqlite_eval(Select, 1, R2, []),
-    sqlite_eval(Select, 0, X, Y).
+    sqlite_many(Select,  1,  R2,  []),
+    sqlite_many(Select,  0,  X,  Y).
 
-:- end_tests(evaluate).
+test(select_row_not_statement, [
+        error(type_error(sqlite_statement, foo)) ]) :-
+    sqlite_row(foo, bar).
+
+test(select_row_not_select, [
+        setup((
+            sqlite_open(foo, DB, [memory(true)]),
+            sqlite_prepare(DB, "Create table x ( y number )", Create) )),
+        cleanup((
+            sqlite_finalize(Create),
+            sqlite_close(DB) )),
+        error(swiplite_error('no columns in result set', select_row), _) ]) :-
+    sqlite_row(Create, _).
+
+test(select_row_no_rows, [
+        setup((
+            sqlite_open(foo, DB, [memory(true),mode(write)]),
+            sqlite_prepare(DB, "Create table x ( y number )", Create),
+            sqlite_do(Create),
+            sqlite_finalize(Create),
+            sqlite_prepare(DB, "Select y from x", Select) )),
+        cleanup((
+            sqlite_finalize(Select),
+            sqlite_close(DB) )),
+        fail ]) :-
+    sqlite_row(Select, _).
+
+test(select_row_one_row, [
+        setup((
+            sqlite_open(foo, DB, [memory(true),mode(write)]),
+            sqlite_prepare(DB, "Create table x ( y number )", Create),
+            sqlite_do(Create),
+            sqlite_finalize(Create),
+            sqlite_prepare(DB, "Insert into x values (5)", Insert),
+            sqlite_do(Insert),
+            sqlite_prepare(DB, "Select y from x", Select) )),
+        cleanup((
+            sqlite_finalize(Select),
+            sqlite_close(DB) )),
+        true(R == row(5)) ]) :-
+    sqlite_row(Select, R).
+
+test(select_row_two_rows, [
+        setup((
+            sqlite_open(foo, DB, [memory(true),mode(write)]),
+            sqlite_prepare(DB, "Create table x ( y number )", Create),
+            sqlite_do(Create),
+            sqlite_finalize(Create),
+            sqlite_prepare(DB, "Insert into x values (5), (10)", Insert),
+            sqlite_do(Insert),
+            sqlite_prepare(DB, "Select y from x order by y asc", Select) )),
+        cleanup((
+            sqlite_finalize(Select),
+            sqlite_close(DB) )),
+        all(R == [row(5), row(10)]) ]) :-
+    sqlite_row(Select, R).
+
+test(select_row_prune, [
+        setup((
+            sqlite_open(foo, DB, [memory(true),mode(write)]),
+            sqlite_prepare(DB, "Create table x ( y number )", Create),
+            sqlite_do(Create),
+            sqlite_finalize(Create),
+            sqlite_prepare(DB, "Insert into x values (5), (10)", Insert),
+            sqlite_do(Insert),
+            sqlite_prepare(DB, "Select y from x order by y asc", Select) )),
+        cleanup((
+            sqlite_finalize(Select),
+            sqlite_close(DB) )),
+        true([
+            R1 == [row(5),row(10)],
+            R2 == row(5),
+            R3 == [row(5),row(10)] ]) ]) :-
+    findall(X, sqlite_row(Select, X), R1),
+    once( sqlite_row(Select, R2) ),
+    findall(X, sqlite_row(Select, X), R3).
+
+:- end_tests(select).

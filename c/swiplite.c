@@ -27,14 +27,14 @@ OTHER DEALINGS IN THE SOFTWARE.
 
 /* Errors */
 static int
-sqlite_error(sqlite3 *db, const char *location)
+sqlite_error(sqlite3 *db, const char *more)
 {
     term_t e;
     return ( (e=PL_new_term_ref())
             && PL_unify_term(e,
                 PL_FUNCTOR_CHARS, "error", 2,
                   PL_FUNCTOR_CHARS, "sqlite_error", 4,
-                    PL_CHARS, location,
+                    PL_CHARS, more,
                     PL_INT, sqlite3_errcode(db),
                     PL_CHARS, sqlite3_errstr(sqlite3_errcode(db)),
                     PL_CHARS, sqlite3_errmsg(db),
@@ -43,21 +43,21 @@ sqlite_error(sqlite3 *db, const char *location)
 }
 
 static int
-sqlite_error_stmt(sqlite3_stmt *stmt, const char *location)
+sqlite_error_stmt(sqlite3_stmt *stmt, const char *more)
 {
-    return sqlite_error(sqlite3_db_handle(stmt), location);
+    return sqlite_error(sqlite3_db_handle(stmt), more);
 }
 
 static int
-swiplite_error(const char *location, const char *message)
+swiplite_error(const char *error, const char *more)
 {
     term_t e;
     return ( (e=PL_new_term_ref())
             && PL_unify_term(e,
                 PL_FUNCTOR_CHARS, "error", 2,
                   PL_FUNCTOR_CHARS, "swiplite_error", 2,
-                    PL_CHARS, location,
-                    PL_CHARS, message,
+                    PL_CHARS, error,
+                    PL_CHARS, more,
                   PL_VARIABLE)
             && PL_raise_exception(e));
 }
@@ -330,8 +330,7 @@ pl_sqlite_prepare(term_t db_handle, term_t sql_text, term_t stmt_handle)
         if (!sqlite3_bind_parameter_name(stmt, i)) {
             sqlite3_finalize(stmt);
             return swiplite_error(
-                    "sqlite_prepare_check_parameters",
-                    "anonymous or missing ?NNN parameter");
+                    "anonymous or missing ?NNN parameter", "prepare");
         }
 
     stmt_data *sd = PL_malloc(sizeof(stmt_data));
@@ -378,82 +377,43 @@ stmt_from_handle(term_t stmt_handle, stmt_data **sd)
     return true;
 }
 
-/*
-I used the following function to figure out the
-value of the "length" argument in `PL_get_nchars()`:
-```
-foreign_t
-pl_text_length(term_t t, term_t n)
-{
-    char *s;
-    size_t s_n;
-    if (!PL_get_nchars(t, &s_n, &s,
-                CVT_ATOM | CVT_STRING | CVT_LIST
-                | CVT_EXCEPTION
-                | BUF_STACK
-                | REP_UTF8)
-            || !PL_unify_uint64(n, s_n))
-        return false;
-
-    return true;
-}
-```
-
-With this, I get:
-```
-?- text_length(foo, N).
-N = 3.
-
-?- text_length('foo\0bar', N).
-N = 7.
-
-?- text_length('foo\0bar\0', N).
-N = 8.
-
-?- text_length('уеиш', N).
-N = 8.
-```
-
-So, it seems that the number is in bytes, and the terminating
-null is not included in that count.
-*/
 int
 bind_value(sqlite3_stmt *stmt, int i, term_t v)
 {
     switch (PL_term_type(v)) {
         case PL_NIL:
             if (SQLITE_OK != sqlite3_bind_null(stmt, i))
-                return sqlite_error_stmt(stmt, "sqlite_bind_null");
+                return sqlite_error_stmt(stmt, "bind_null");
             break;
         case PL_ATOM:
         case PL_STRING:
         case PL_LIST_PAIR: {
             char *s; size_t n;
+            /* we allow embedding NUL in the string
+               see: https://sqlite.org/nulinstr.html */
             if (!PL_get_nchars(v, &n, &s,
                         CVT_ATOM | CVT_STRING | CVT_LIST
                         | CVT_EXCEPTION
                         | BUF_STACK
                         | REP_UTF8 ))
                 return false;
-            /* we allow embedding NUL in the string
-               see: https://sqlite.org/nulinstr.html */
             if (SQLITE_OK != sqlite3_bind_text(stmt, i, s, n,
                     SQLITE_TRANSIENT))
-                return sqlite_error_stmt(stmt, "sqlite_bind_text");
+                return sqlite_error_stmt(stmt, "bind_text");
             break; }
 
         case PL_INTEGER: {
             int64_t x;
             if (!PL_get_int64_ex(v, &x)) return false;
             if (SQLITE_OK != sqlite3_bind_int64(stmt, i, x))
-                return sqlite_error_stmt(stmt, "sqlite_bind_int");
+                return sqlite_error_stmt(stmt, "bind_int");
             break; }
 
         case PL_FLOAT: {
             double d;
             if (!PL_get_float_ex(v, &d)) return false;
             if (SQLITE_OK != sqlite3_bind_double(stmt, i, d))
-                return sqlite_error_stmt(stmt, "sqlite_bind_float");
+                return sqlite_error_stmt(stmt, "bind_float");
             break; }
 
         /* case PL_VARIABLE: not supported */
@@ -472,7 +432,7 @@ pl_sqlite_bind(term_t stmt_handle, term_t values)
         return false;
 
     if (SQLITE_OK != sqlite3_clear_bindings(sd->stmt))
-        return sqlite_error_stmt(sd->stmt, "sqlite_clear_bindings");
+        return sqlite_error_stmt(sd->stmt, "clear_bindings");
 
     size_t pc = sqlite3_bind_parameter_count(sd->stmt);
 
@@ -502,7 +462,7 @@ pl_sqlite_reset(term_t stmt_handle)
         return false;
 
     if (SQLITE_OK != sqlite3_reset(sd->stmt))
-        return sqlite_error_stmt(sd->stmt, "sqlite_reset");
+        return sqlite_error_stmt(sd->stmt, "reset");
 
     sd->state = STMT_READY;
     return true;
@@ -517,7 +477,7 @@ pl_sqlite_sql(term_t stmt_handle, term_t sql)
         return false;
 
     const char *s = sqlite3_sql(sd->stmt);
-    if (!s) return sqlite_error_stmt(sd->stmt, "sqlite_sql");
+    if (!s) return sqlite_error_stmt(sd->stmt, "sql");
 
     /* using atom because I might want to cache the
        prepared statements */
@@ -533,7 +493,7 @@ pl_sqlite_expanded_sql(term_t stmt_handle, term_t sql)
         return false;
 
     char *s = sqlite3_expanded_sql(sd->stmt);
-    if (!s) return sqlite_error_stmt(sd->stmt, "sqlite_expanded_sql");
+    if (!s) return sqlite_error_stmt(sd->stmt, "expanded_sql");
 
     /* using string because sqlite string literals are
        single-quoted and are difficult to read when embedded
@@ -557,7 +517,7 @@ pl_sqlite_column_names(term_t stmt_handle, term_t colnames)
                 PL_new_functor(SWIPLITE_atom_cols, 0));
 
     term_t r, ra;
-    if (!(r=PL_new_term_ref())
+    if (!(r=PL_copy_term_ref(colnames))
             || !(ra=PL_new_term_refs(cc)))
         return false;
 
@@ -580,14 +540,14 @@ pl_sqlite_eval_noresults(term_t stmt_handle)
         return false;
 
     if (sqlite3_column_count(sd->stmt))
-        return swiplite_error("sqlite_eval/1", "non-empty result set");
+        return swiplite_error("non-empty result set", "command");
 
     int r = sqlite3_step(sd->stmt);
     if (SQLITE_DONE == r
             && SQLITE_OK == sqlite3_reset(sd->stmt))
         return true;
 
-    return sqlite_error_stmt(sd->stmt, "sqlite_eval_no_result");
+    return sqlite_error_stmt(sd->stmt, "command");
 }
 
 static int columns_to_terms(sqlite3_stmt *stmt, int nc, term_t v0)
@@ -629,19 +589,19 @@ pl_sqlite_eval_oneresult(term_t stmt_handle, term_t result)
         return false;
 
     if (!sqlite3_column_count(sd->stmt))
-        return swiplite_error("sqlite_eval/2", "no columns in result set");
+        return swiplite_error("no columns in result set", "select_one");
 
     int step = sqlite3_step(sd->stmt);
     if (SQLITE_DONE == step)
-        return swiplite_error("sqlite_eval/2", "no rows in result set");
+        return swiplite_error("no rows in result set", "select_one");
 
     if (SQLITE_ROW != step)
-        return sqlite_error_stmt(sd->stmt, "sqlite_eval_one_result");
+        return sqlite_error_stmt(sd->stmt, "select_one");
 
     /* SQLITE_ROW == step */
     int dc = sqlite3_data_count(sd->stmt);
-    if (0 == dc)
-        return swiplite_error("sqlite_eval/2", "no columns in result row");
+    if (0 >= dc)
+        return swiplite_error("no columns in result row", "select_one");
 
     term_t ra = PL_new_term_refs(dc);
     if (!ra || !columns_to_terms(sd->stmt, dc, ra))
@@ -649,18 +609,18 @@ pl_sqlite_eval_oneresult(term_t stmt_handle, term_t result)
 
     step = sqlite3_step(sd->stmt);
     if (SQLITE_ROW == step)
-        return swiplite_error("sqlite_eval/2", "additional rows in result set");
+        return swiplite_error("additional rows in result set", "select_one");
     if (SQLITE_DONE == step
             && SQLITE_OK == sqlite3_reset(sd->stmt)) {
         functor_t rf;
         term_t r;
         if (!(rf=PL_new_functor(SWIPLITE_atom_row, dc))
-                || !(r=PL_new_term_ref())
+                || !(r=PL_copy_term_ref(result))
                 || !PL_cons_functor_v(r, rf, ra))
             return false;
         return PL_unify(result, r);
     }
-    return sqlite_error_stmt(sd->stmt, "sqlite_eval_one_result_end");
+    return sqlite_error_stmt(sd->stmt, "select_one");
 }
 
 foreign_t
@@ -677,10 +637,10 @@ pl_sqlite_eval_someresults(
     /* "A SELECT statement will always have a positive
        sqlite3_column_count()..."
         - from the sqlite3_column_count() docs */
-    if (!sqlite3_column_count(sd->stmt))
-        return swiplite_error("sqlite_eval/4", "no columns in result set");
-
     int cc = sqlite3_column_count(sd->stmt);
+    if (!cc)
+        return swiplite_error("no columns in result set", "select_many");
+
     functor_t rf = PL_new_functor(SWIPLITE_atom_row, cc);
     if (!rf) return false;
 
@@ -725,13 +685,94 @@ pl_sqlite_eval_someresults(
             else break;
         }
         /* Neither SQLITE_DONE nor SQLITE_ROW */
-        return sqlite_error_stmt(sd->stmt, "sqlite_eval_many");
+        return sqlite_error_stmt(sd->stmt, "select_many");
     }
     if (!PL_unify(rows0, tail)
             || (vn && !PL_unify_int64(n, nrows)))
         return false;
 
     return true;
+}
+
+typedef struct stmt_context {
+    stmt_data *sd;
+    int cc;
+    functor_t rf;
+} stmt_context;
+
+foreign_t
+pl_sqlite_eval_row(term_t stmt_handle, term_t row, control_t ctrl_handle)
+{   stmt_context *sc;
+    int step;
+
+    switch (PL_foreign_control(ctrl_handle)) {
+        case PL_FIRST_CALL: {
+            stmt_data *sd;
+            if (!stmt_from_handle(stmt_handle, &sd))
+                return false;
+            if (STMT_READY != sd->state)
+                return swiplite_error("statement not ready",
+                        stmt_state_str(sd->state));
+
+            int cc = sqlite3_column_count(sd->stmt);
+            if (0 >= cc)
+                return swiplite_error("no columns in result set", "select_row");
+
+            /* first step */
+            step = sqlite3_step(sd->stmt);
+            if (SQLITE_DONE == step
+                    && SQLITE_OK == sqlite3_reset(sd->stmt)) {
+                sd->state = STMT_READY;
+                return false;
+            }
+            functor_t rf;
+            if (SQLITE_ROW == step
+                    && sqlite3_data_count(sd->stmt) == cc
+                    && (rf=PL_new_functor(SWIPLITE_atom_row, cc)) ) {
+                sd->state = STMT_BUSY;
+                if (!(sc = malloc(sizeof *sc)))
+                    return PL_resource_error("memory");
+                sc->sd = sd;
+                sc->cc = cc;
+                sc->rf = rf;
+                break;
+            }
+            return sqlite_error_stmt(sd->stmt, "select_row");
+        }
+
+        case PL_REDO:
+            sc = PL_foreign_context_address(ctrl_handle);
+            break;
+
+        case PL_PRUNED:
+            sc = PL_foreign_context_address(ctrl_handle);
+            if (SQLITE_OK == sqlite3_reset(sc->sd->stmt))
+                sc->sd->state = STMT_READY;
+            PL_free(sc);
+            return true;
+    }
+
+    term_t r, ra;
+    if (!(r=PL_copy_term_ref(row))
+            || !(ra=PL_new_term_refs(sc->cc))
+            || !columns_to_terms(sc->sd->stmt, sc->cc, ra)
+            || !PL_cons_functor_v(r, sc->rf, ra)
+            || !PL_unify(row, r))
+        return false;
+    /* next step */
+    step = sqlite3_step(sc->sd->stmt);
+    if (SQLITE_ROW == step
+            && sqlite3_data_count(sc->sd->stmt) == sc->cc)
+        PL_retry_address(sc);
+
+    if (SQLITE_DONE == step) {
+        if (SQLITE_OK == sqlite3_reset(sc->sd->stmt))
+            sc->sd->state = STMT_READY;
+        PL_free(sc);
+        return true;
+    }
+
+    return sqlite_error_stmt(sc->sd->stmt, "select_row_next");
 }
 
 install_t
@@ -757,7 +798,8 @@ install_swiplite()
     PL_register_foreign("sqlite_sql", 2, pl_sqlite_sql, 0);
     PL_register_foreign("sqlite_expanded_sql", 2, pl_sqlite_expanded_sql, 0);
     PL_register_foreign("sqlite_column_names", 2, pl_sqlite_column_names, 0);
-    PL_register_foreign("sqlite_eval", 1, pl_sqlite_eval_noresults, 0);
-    PL_register_foreign("sqlite_eval", 2, pl_sqlite_eval_oneresult, 0);
-    PL_register_foreign("sqlite_eval", 4, pl_sqlite_eval_someresults, 0);
+    PL_register_foreign("sqlite_do", 1, pl_sqlite_eval_noresults, 0);
+    PL_register_foreign("sqlite_one", 2, pl_sqlite_eval_oneresult, 0);
+    PL_register_foreign("sqlite_many", 4, pl_sqlite_eval_someresults, 0);
+    PL_register_foreign("sqlite_row", 2, pl_sqlite_eval_row, PL_FA_NONDETERMINISTIC);
 }
