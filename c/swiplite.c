@@ -101,6 +101,7 @@ static PL_option_t sqlite_open_options[] = {
     PL_OPTION("mode", OPT_ATOM),
     PL_OPTION("memory", OPT_BOOL),
     PL_OPTION("threaded", OPT_ATOM),
+    PL_OPTION("foreign_keys", OPT_BOOL),
     PL_OPTIONS_END
 };
 
@@ -123,6 +124,18 @@ static int atom_as_term(atom_t a)
     return 0;
 }
 
+static int
+foreign_keys_callback(void *a, int argc, char **argv, char **azColName)
+{
+/* supposed to be called exactly once, with first argument pre-set to false */
+    int supported = *(int *)a;
+    if (false == supported) {
+        *(int *)a = true;
+        return 0;
+    }
+    return 1;
+}
+
 foreign_t
 pl_sqlite_open(term_t db_name, term_t db_handle, term_t opts)
 {
@@ -139,10 +152,11 @@ pl_sqlite_open(term_t db_name, term_t db_handle, term_t opts)
 
     atom_t mode = SQLITE_OPEN_mode_read;
     int memory = false;
+    int foreign_keys = true;
     atom_t threaded = SQLITE_OPEN_threaded_single;
     if (!PL_scan_options(opts, OPT_ALL,
                 "sqlite_open_options", sqlite_open_options,
-                &mode, &memory, &threaded))
+                &mode, &memory, &threaded, &foreign_keys))
         return false;
 
     int flags = SQLITE_OPEN_EXRESCODE;
@@ -176,6 +190,22 @@ pl_sqlite_open(term_t db_name, term_t db_handle, term_t opts)
         PL_permission_error("open", sqlite3_errmsg(db), db_name);
         sqlite3_close(db);
         return false;
+    }
+
+    if (foreign_keys) {
+        int foreign_keys_supported = false;
+        char *err_str = 0;
+        if (SQLITE_OK != sqlite3_exec(db,
+                    "PRAGMA foreign_keys; PRAGMA foreign_keys = ON;",
+                    foreign_keys_callback, &foreign_keys_supported,
+                    &err_str)) {
+            sqlite3_close(db);
+            return swiplite_error(err_str, "foreign_keys(true)");
+        }
+        if (false == foreign_keys_supported) {
+            sqlite3_close(db);
+            return swiplite_error("Foreign keys not supported", name);
+        }
     }
 
     return PL_unify_blob(db_handle, db, sizeof(db),
@@ -277,23 +307,29 @@ write_stmt(IOSTREAM *s, atom_t symbol, int flags)
 }
 
 /* Prepare statements */
+static int db_from_handle(term_t db_handle, sqlite3 **db)
+{
+    PL_blob_t *type;
+    if (!PL_is_blob(db_handle, &type)
+            || type != &sqlite_connection_blob)
+        return PL_type_error("sqlite_connection", db_handle);
+
+    size_t blob_n;
+    if (!PL_get_blob(db_handle, (void *)db, &blob_n, NULL)
+            || !blob_n)
+        return PL_existence_error("sqlite_connection", db_handle);
+
+    return true;
+}
+
 foreign_t
 pl_sqlite_prepare(term_t db_handle, term_t sql_text, term_t stmt_handle)
 {
     if (!PL_is_variable(stmt_handle))
         return PL_uninstantiation_error(stmt_handle);
 
-    PL_blob_t *type;
-    if (!PL_is_blob(db_handle, &type)
-            || type != &sqlite_connection_blob)
-        return PL_type_error("sqlite_connection", db_handle);
-
     sqlite3 *db;
-    size_t blob_n;
-    if (!PL_get_blob(db_handle, (void *)&db, &blob_n, NULL)
-            || !blob_n)
-        return PL_existence_error("sqlite_connection", db_handle);
-
+    if (!db_from_handle(db_handle, &db)) return false;
 
     char *sql;
     size_t sql_len;
@@ -775,15 +811,211 @@ pl_sqlite_eval_row(term_t stmt_handle, term_t row, control_t ctrl_handle)
     return sqlite_error_stmt(sc->sd->stmt, "select_row_next");
 }
 
+static atom_t SQLITE_STATUS_memory_used;
+static atom_t SQLITE_STATUS_pagecache_used;
+static atom_t SQLITE_STATUS_pagecache_overflow;
+static atom_t SQLITE_STATUS_malloc_size;
+static atom_t SQLITE_STATUS_parser_stack;
+static atom_t SQLITE_STATUS_pagecache_size;
+static atom_t SQLITE_STATUS_malloc_count;
+
+static int sqlite_status_code(atom_t a)
+{
+    if (SQLITE_STATUS_memory_used        == a) return SQLITE_STATUS_MEMORY_USED;
+    if (SQLITE_STATUS_pagecache_used     == a) return SQLITE_STATUS_PAGECACHE_USED;
+    if (SQLITE_STATUS_pagecache_overflow == a) return SQLITE_STATUS_PAGECACHE_OVERFLOW;
+    if (SQLITE_STATUS_malloc_size        == a) return SQLITE_STATUS_MALLOC_SIZE;
+    if (SQLITE_STATUS_parser_stack       == a) return SQLITE_STATUS_PARSER_STACK;
+    if (SQLITE_STATUS_pagecache_size     == a) return SQLITE_STATUS_PAGECACHE_SIZE;
+    if (SQLITE_STATUS_malloc_count       == a) return SQLITE_STATUS_MALLOC_COUNT;
+
+    return -1;
+}
+
+foreign_t
+pl_sqlite_status(term_t op, term_t current, term_t highwater, term_t reset)
+{
+    atom_t op_atom;
+    if (!PL_get_atom_ex(op, &op_atom)) return false;
+
+    int code = sqlite_status_code(op_atom);
+    if (-1 == code)
+        return PL_domain_error("SQLITE_STATUS_<code>", op);
+
+    if (!PL_is_variable(current))
+        return PL_uninstantiation_error(current);
+
+    if (!PL_is_variable(highwater))
+        return PL_uninstantiation_error(highwater);
+
+    int r = false;
+    if (!PL_get_bool_ex(reset, &r)) return false;
+
+    int64_t c;
+    int64_t h;
+
+    int sqlite_r = sqlite3_status64(code, &c, &h, r);
+    if (SQLITE_OK != sqlite_r)
+        return swiplite_error("sqlite_status", sqlite3_errstr(sqlite_r));
+
+    return (PL_unify_int64(current, c) && PL_unify_int64(highwater, h));
+}
+
+static atom_t SQLITE_DBSTATUS_lookaside_used;
+static atom_t SQLITE_DBSTATUS_cache_used;
+static atom_t SQLITE_DBSTATUS_schema_used;
+static atom_t SQLITE_DBSTATUS_stmt_used;
+static atom_t SQLITE_DBSTATUS_lookaside_hit;
+static atom_t SQLITE_DBSTATUS_lookaside_miss_size;
+static atom_t SQLITE_DBSTATUS_lookaside_miss_full;
+static atom_t SQLITE_DBSTATUS_cache_hit;
+static atom_t SQLITE_DBSTATUS_cache_miss;
+static atom_t SQLITE_DBSTATUS_cache_write;
+static atom_t SQLITE_DBSTATUS_deferred_fks;
+static atom_t SQLITE_DBSTATUS_cache_used_shared;
+static atom_t SQLITE_DBSTATUS_cache_spill;
+
+static int sqlite_dbstatus_code(atom_t op)
+{
+    if (SQLITE_DBSTATUS_lookaside_used      == op) return SQLITE_DBSTATUS_LOOKASIDE_USED;
+    if (SQLITE_DBSTATUS_cache_used          == op) return SQLITE_DBSTATUS_CACHE_USED;
+    if (SQLITE_DBSTATUS_schema_used         == op) return SQLITE_DBSTATUS_SCHEMA_USED;
+    if (SQLITE_DBSTATUS_stmt_used           == op) return SQLITE_DBSTATUS_STMT_USED;
+    if (SQLITE_DBSTATUS_lookaside_hit       == op) return SQLITE_DBSTATUS_LOOKASIDE_HIT;
+    if (SQLITE_DBSTATUS_lookaside_miss_size == op) return SQLITE_DBSTATUS_LOOKASIDE_MISS_SIZE;
+    if (SQLITE_DBSTATUS_lookaside_miss_full == op) return SQLITE_DBSTATUS_LOOKASIDE_MISS_FULL;
+    if (SQLITE_DBSTATUS_cache_hit           == op) return SQLITE_DBSTATUS_CACHE_HIT;
+    if (SQLITE_DBSTATUS_cache_miss          == op) return SQLITE_DBSTATUS_CACHE_MISS;
+    if (SQLITE_DBSTATUS_cache_write         == op) return SQLITE_DBSTATUS_CACHE_WRITE;
+    if (SQLITE_DBSTATUS_deferred_fks        == op) return SQLITE_DBSTATUS_DEFERRED_FKS;
+    if (SQLITE_DBSTATUS_cache_used_shared   == op) return SQLITE_DBSTATUS_CACHE_USED_SHARED;
+    if (SQLITE_DBSTATUS_cache_spill         == op) return SQLITE_DBSTATUS_CACHE_SPILL;
+
+    return -1;
+}
+
+foreign_t
+pl_sqlite_db_status(term_t db_handle,
+        term_t op, term_t current, term_t highwater, term_t reset)
+{
+    sqlite3 *db;
+    if (!db_from_handle(db_handle, &db)) return false;
+
+    atom_t op_atom;
+    if (!PL_get_atom_ex(op, &op_atom)) return false;
+    int code = sqlite_dbstatus_code(op_atom);
+    if (-1 == code)
+        return PL_domain_error("SQLITE_DBSTATUS_<code>", op);
+
+    if (!PL_is_variable(current))
+        return PL_uninstantiation_error(current);
+
+    if (!PL_is_variable(highwater))
+        return PL_uninstantiation_error(highwater);
+
+    int r = false;
+    if (!PL_get_bool_ex(reset, &r)) return false;
+
+    int c;
+    int h;
+
+    int sqlite_r = sqlite3_db_status(db, code, &c, &h, r);
+    if (SQLITE_OK != sqlite_r)
+        return swiplite_error("sqlite_db_status", sqlite3_errstr(sqlite_r));
+
+    return (PL_unify_integer(current, c) && PL_unify_integer(highwater, h));
+}
+
+static atom_t SQLITE_STMTSTATUS_fullscan_step;
+static atom_t SQLITE_STMTSTATUS_sort;
+static atom_t SQLITE_STMTSTATUS_autoindex;
+static atom_t SQLITE_STMTSTATUS_vm_step;
+static atom_t SQLITE_STMTSTATUS_reprepare;
+static atom_t SQLITE_STMTSTATUS_run;
+static atom_t SQLITE_STMTSTATUS_filter_miss;
+static atom_t SQLITE_STMTSTATUS_filter_hit;
+static atom_t SQLITE_STMTSTATUS_memused;
+
+static int sqlite_stmtstatus_code(atom_t op)
+{
+    if (SQLITE_STMTSTATUS_fullscan_step == op) return SQLITE_STMTSTATUS_FULLSCAN_STEP;
+    if (SQLITE_STMTSTATUS_sort          == op) return SQLITE_STMTSTATUS_SORT;
+    if (SQLITE_STMTSTATUS_autoindex     == op) return SQLITE_STMTSTATUS_AUTOINDEX;
+    if (SQLITE_STMTSTATUS_vm_step       == op) return SQLITE_STMTSTATUS_VM_STEP;
+    if (SQLITE_STMTSTATUS_reprepare     == op) return SQLITE_STMTSTATUS_REPREPARE;
+    if (SQLITE_STMTSTATUS_run           == op) return SQLITE_STMTSTATUS_RUN;
+    if (SQLITE_STMTSTATUS_filter_miss   == op) return SQLITE_STMTSTATUS_FILTER_MISS;
+    if (SQLITE_STMTSTATUS_filter_hit    == op) return SQLITE_STMTSTATUS_FILTER_HIT;
+    if (SQLITE_STMTSTATUS_memused       == op) return SQLITE_STMTSTATUS_MEMUSED;
+
+    return -1;
+}
+
+foreign_t
+pl_sqlite_stmt_status(term_t stmt_handle, term_t op, term_t current, term_t reset)
+{
+    stmt_data *sd;
+    if (!stmt_from_handle(stmt_handle, &sd))
+        return false;
+
+    atom_t op_atom;
+    if (!PL_get_atom_ex(op, &op_atom)) return false;
+    int code = sqlite_stmtstatus_code(op_atom);
+    if (-1 == code)
+        return PL_domain_error("SQLITE_STMTSTATUS_<code>", op);
+
+    if (!PL_is_variable(current))
+        return PL_uninstantiation_error(current);
+
+    int r = false;
+    if (!PL_get_bool_ex(reset, &r)) return false;
+
+    int c = sqlite3_stmt_status(sd->stmt, code, r);
+
+    return PL_unify_integer(current, c);
+}
+
 install_t
 install_swiplite()
 {
-    SQLITE_OPEN_mode_read = PL_new_atom("read");
-    SQLITE_OPEN_mode_write = PL_new_atom("write");
-    SQLITE_OPEN_mode_create = PL_new_atom("create");
-    SQLITE_OPEN_threaded_single = PL_new_atom("single");
-    SQLITE_OPEN_threaded_multi = PL_new_atom("multi");
-    SQLITE_OPEN_threaded_serialized = PL_new_atom("serialized");
+    SQLITE_OPEN_mode_read            = PL_new_atom("read");
+    SQLITE_OPEN_mode_write           = PL_new_atom("write");
+    SQLITE_OPEN_mode_create          = PL_new_atom("create");
+    SQLITE_OPEN_threaded_single      = PL_new_atom("single");
+    SQLITE_OPEN_threaded_multi       = PL_new_atom("multi");
+    SQLITE_OPEN_threaded_serialized  = PL_new_atom("serialized");
+
+    SQLITE_STATUS_memory_used        = PL_new_atom("memory_used");
+    SQLITE_STATUS_pagecache_used     = PL_new_atom("pagecache_used");
+    SQLITE_STATUS_pagecache_overflow = PL_new_atom("pagecache_overflow");
+    SQLITE_STATUS_malloc_size        = PL_new_atom("malloc_size");
+    SQLITE_STATUS_parser_stack       = PL_new_atom("parser_stack");
+    SQLITE_STATUS_pagecache_size     = PL_new_atom("pagecache_size");
+    SQLITE_STATUS_malloc_count       = PL_new_atom("malloc_count");
+
+    SQLITE_DBSTATUS_lookaside_used      = PL_new_atom("lookaside_used");
+    SQLITE_DBSTATUS_cache_used          = PL_new_atom("cache_used");
+    SQLITE_DBSTATUS_schema_used         = PL_new_atom("schema_used");
+    SQLITE_DBSTATUS_stmt_used           = PL_new_atom("stmt_used");
+    SQLITE_DBSTATUS_lookaside_hit       = PL_new_atom("lookaside_hit");
+    SQLITE_DBSTATUS_lookaside_miss_size = PL_new_atom("lookaside_miss_size");
+    SQLITE_DBSTATUS_lookaside_miss_full = PL_new_atom("lookaside_miss_full");
+    SQLITE_DBSTATUS_cache_hit           = PL_new_atom("cache_hit");
+    SQLITE_DBSTATUS_cache_miss          = PL_new_atom("cache_miss");
+    SQLITE_DBSTATUS_cache_write         = PL_new_atom("cache_write");
+    SQLITE_DBSTATUS_deferred_fks        = PL_new_atom("deferred_fks");
+    SQLITE_DBSTATUS_cache_used_shared   = PL_new_atom("cache_used_shared");
+    SQLITE_DBSTATUS_cache_spill         = PL_new_atom("cache_spill");
+
+    SQLITE_STMTSTATUS_fullscan_step     = PL_new_atom("fullscan_step");
+    SQLITE_STMTSTATUS_sort              = PL_new_atom("sort");
+    SQLITE_STMTSTATUS_autoindex         = PL_new_atom("autoindex");
+    SQLITE_STMTSTATUS_vm_step           = PL_new_atom("vm_step");
+    SQLITE_STMTSTATUS_reprepare         = PL_new_atom("reprepare");
+    SQLITE_STMTSTATUS_run               = PL_new_atom("run");
+    SQLITE_STMTSTATUS_filter_miss       = PL_new_atom("filter_miss");
+    SQLITE_STMTSTATUS_filter_hit        = PL_new_atom("filter_hit");
+    SQLITE_STMTSTATUS_memused           = PL_new_atom("memused");
 
     SWIPLITE_atom_bv = PL_new_atom("bv");
     SWIPLITE_atom_row = PL_new_atom("row");
@@ -802,4 +1034,7 @@ install_swiplite()
     PL_register_foreign("sqlite_one", 2, pl_sqlite_eval_oneresult, 0);
     PL_register_foreign("sqlite_many", 4, pl_sqlite_eval_someresults, 0);
     PL_register_foreign("sqlite_row", 2, pl_sqlite_eval_row, PL_FA_NONDETERMINISTIC);
+    PL_register_foreign("sqlite_status", 4, pl_sqlite_status, 0);
+    PL_register_foreign("sqlite_db_status", 5, pl_sqlite_db_status, 0);
+    PL_register_foreign("sqlite_stmt_status", 4, pl_sqlite_stmt_status, 0);
 }

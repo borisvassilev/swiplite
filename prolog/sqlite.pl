@@ -23,6 +23,10 @@ OTHER DEALINGS IN THE SOFTWARE.
 */
 :- module(sqlite, [
             sqlite_version/1,
+            sqlite_command/2,
+            sqlite_query/3,
+            sqlite_query_all/3,
+            sqlite_schema/2,
             sqlite_open/3,
             sqlite_close/1,
             sqlite_prepare/3,
@@ -35,7 +39,10 @@ OTHER DEALINGS IN THE SOFTWARE.
             sqlite_do/1,
             sqlite_one/2,
             sqlite_many/4,
-            sqlite_row/2 ]).
+            sqlite_row/2,
+            sqlite_status/4,
+            sqlite_db_status/5,
+            sqlite_stmt_status/4 ] ).
 
 /** <module> Prolog bindings for SQLite
 
@@ -97,6 +104,71 @@ sqlite_version(V) :-
         sqlite_close(DB)),
     atom_string(V, V0).
 
+/** sqlite_command(++Connection:blob, ++SQL:text) is det
+
+Execute the command in SQL.
+
+This assumes that the command is not a =|SELECT|= query and
+it does not return any rows.
+
+@arg Connection A database connection obtained with sqlite_open/3
+@arg SQL The text of the command to be executed
+*/
+sqlite_command(DB, SQL) :-
+    setup_call_cleanup(sqlite_prepare(DB, SQL, S),
+        sqlite_do(S),
+        sqlite_finalize(S)).
+
+/** sqlite_query(++Connection:blob, ++SQL:text, -Row:row) is semidet
+
+Get rows from the result set of the statement in SQL on backtracking.
+
+If the result set is empty, fail.
+
+@arg Connection A database connection obtained with sqlite_open/3
+@arg SQL The text of the command to be executed
+@arg Row Unified with row(Col1, Col2, ...) on backtracking
+*/
+sqlite_query(DB, SQL, Row) :-
+    setup_call_cleanup(sqlite_prepare(DB, SQL, S),
+        sqlite_row(S, Row),
+        sqlite_finalize(S)).
+
+/** sqlite_query_all(++Connection:blob, ++SQL:text, -Rows:list(row)) is semidet
+
+Get all rows from the result set of the statement in SQL as a list in Rows.
+
+@arg Connection A database connection obtained with sqlite_open/3
+@arg SQL The text of the command to be executed
+@arg Rows The list of rows with all rows in the result set
+*/
+sqlite_query_all(DB, SQL, Rs) :-
+    setup_call_cleanup(sqlite_prepare(DB, SQL, S),
+        sqlite_many(S, _, Rs, []),
+        sqlite_finalize(S)).
+
+/** sqlite_schema(++Connection:blob, -Schema:text) is det
+
+Query the DB schema for that connection.
+
+This is a convenience predicate returning the `sql` column of the table
+`sqlite_schema`.
+
+@arg Connection A database connection obtained with sqlite_open/3
+@arg Schema A list of objects in the current schema
+
+@see [The Schema Table](https://www.sqlite.org/schematab.html)
+@see [=|PRAGMA table_list|=](https://www.sqlite.org/pragma.html#pragma_table_list)
+@see [=|PRAGMA table_info|=](https://www.sqlite.org/pragma.html#pragma_table_info)
+@see [=|PRAGMA table_xinfo|=](https://www.sqlite.org/pragma.html#pragma_table_xinfo)
+*/
+sqlite_schema(Connection, Schema) :-
+    setup_call_cleanup(sqlite_prepare(Connection,
+            "Select sql from sqlite_schema where sql is not null", S),
+        sqlite_many(S, _, Schema, []),
+        sqlite_finalize(S)).
+
+
 :- predicate_options(sqlite_open/3, 3,
         [ mode(oneof([read,write,create])),
           memory(boolean),
@@ -133,6 +205,17 @@ The following options are recognized:
       | =single= (default) | (empty)                 |
       | =multi=            | =SQLITE_OPEN_NOMUTEX=   |
       | =serialized==      | =SQLITE_OPEN_FULLMUTEX= |
+
+    * foreign_keys(Bool)
+      Enable [foreign keys](https://www.sqlite.org/foreignkeys.html)
+      for this connection. Defaults to =|true|= and will enable foreign
+      keys for this connection and throw an error if foreign keys are
+      not supported. Setting this option to =|false|= is required
+      if the used version of SQLite does not support foreign keys.
+
+      | *Value*          | *Behaviour*                   |
+      | =true= (default) | Enable foreign keys           |
+      | =false=          | Do not check for foreign keys |
 
 @arg File Relative path to the database file. Interpreted as UTF-8 string.
 @arg Connection A blob with the database connection.
@@ -271,7 +354,7 @@ Evaluate a statement that has no results
 
 For example, =|CREATE|= or =|INSERT|= statements must be
 evaluated using sqlite_do/1, while a =|SELECT|= needs
-either sqlite_one/1 or sqlite_many/4.
+either sqlite_one/2 or sqlite_many/4.
 
 Statement is reset automatically upon success.
 
@@ -317,7 +400,7 @@ with 0 and both R and T with the empty list `[]`.
 @see [`sqlite3_column_count()`](https://www.sqlite.org/c3ref/column_count.html)
 */
 
-/** sqlite_row(++Statement:blob, Row:row) is semidet
+/** sqlite_row(++Statement:blob, -Row:row) is semidet
 
 Get rows from the result set of Statement on backtracking.
 
@@ -325,4 +408,80 @@ If the result set is empty, fail.
 
 @arg Statement A =|SELECT|= statement compiled with sqlite_prepare/3
 @arg Row A row in the result set
+*/
+
+/** sqlite_status(
+        ++Op:sqlite_status_code,
+        -Current:integer,
+        -Highwater:integer,
+        +Reset:boolean) is det
+
+Query [SQLite runtime status](https://www.sqlite.org/c3ref/status.html).
+
+The first argument is an atom that corresponds to one of the
+[=|SQLITE_STATUS_|= codes](https://www.sqlite.org/c3ref/c_status_malloc_count.html),
+with the =|SQLITE_STATUS_|= prefix dropped and in lowercase. For example,
+=|memory_used|= or =|parser_stack|=.
+
+@arg Op SQLite run-time status parameter
+@arg Current is the current value of the parameter
+@arg Highwater is the highest recorder value
+@arg Reset When =|true|=, the Highwater value is reset after it is returned
+
+@see sqlite_db_status/5
+@see sqlite_stmt_status/4
+@see [SQLite Runtime Status](https://www.sqlite.org/c3ref/status.html)
+@see [Status Parameters](https://www.sqlite.org/c3ref/c_status_malloc_count.html)
+*/
+
+/** sqlite_db_status(
+        ++DB:sqlite_connection,
+        ++Op:sqlite_db_status_code,
+        -Current:integer,
+        -Highwater:integer,
+        +Reset:boolean) is det
+
+Query [SQLite database connection status](https://www.sqlite.org/c3ref/db_status.html).
+
+The first argument is a database connection blob.
+The second argument is an atom that corresponds to one of the
+[=|SQLITE_DBSTATUS_|= codes](https://www.sqlite.org/c3ref/c_dbstatus_options.html),
+with the =|SQLITE_DBSTATUS_|= prefix dropped and in lowercase. For example,
+=|cache_used|= or =|deferred_fks|=.
+
+@arg DB A database connection obtained with sqlite_open/3
+@arg Op SQLite status parameter for database connections
+@arg Current is the current value of the parameter
+@arg Highwater is the highest recorder value
+@arg Reset When =|true|=, the Highwater value is reset after it is returned
+
+@see sqlite_status/4
+@see sqlite_stmt_status/4
+@see [Database Connection Status](https://www.sqlite.org/c3ref/db_status.html)
+@see [Status Parameters for database connections](https://www.sqlite.org/c3ref/c_dbstatus_options.html)
+*/
+
+/** sqlite_stmt_status(
+        ++DB:sqlite_statement,
+        ++Op:sqlite_stmt_status_code,
+        -Counter:integer,
+        +Reset:boolean) is det
+
+Query [SQLite prepared statement status](https://www.sqlite.org/c3ref/stmt_status.html).
+
+The first argument is a prepared statement blob.
+The second argument is an atom that corresponds to one of the
+[=|SQLITE_STMTSTATUS_|= codes](https://www.sqlite.org/c3ref/c_stmtstatus_counter.html),
+with the =|SQLITE_STMTSTATUS_|= prefix dropped and in lowercase. For example,
+=|sort|= or =|reprepare|=.
+
+@arg DB A prepared statement obtained with sqlite_prepare/3
+@arg Op SQLite status parameter for prepared statement
+@arg Counter is the current value of the corresponding counter
+@arg Reset When =|true|=, the counter is reset after it is returned
+
+@see sqlite_status/4
+@see sqlite_db_status/5
+@see [Prepared Statement Status](https://www.sqlite.org/c3ref/stmt_status.html)
+@see [Status Parameters for prepared statements](https://www.sqlite.org/c3ref/c_stmtstatus_counter.html)
 */

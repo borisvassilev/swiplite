@@ -94,11 +94,51 @@ test(open_bad_mode, [error(domain_error(_,bad_mode))] ) :-
 test(open_bad_threaded, [error(domain_error(_,bad_threaded))] ) :-
     sqlite_open(foo, _, [threaded(bad_threaded)]).
 
+foreign_keys_setup(DB) :-
+    sqlite_command(DB, "create table a ( x primary key )"),
+    sqlite_command(DB, "create table b ( y primary key )"),
+    sqlite_command(DB,
+            "create table c (
+                x, y,
+                foreign key ( x ) references a ( x ),
+                foreign key ( y ) references b ( y )
+             )
+            ").
+
+test(foreign_keys_default, [
+        setup((
+            sqlite_open(foo, DB, [memory(true),mode(write)]),
+            foreign_keys_setup(DB) )),
+        cleanup(sqlite_close(DB)),
+        error(sqlite_error(_, _, _, 'FOREIGN KEY constraint failed')) ]) :-
+    sqlite_command(DB, "insert into c ( x, y ) values ( 'foo', 'bar' )").
+
+test(open_foreign_keys_explicit, [
+        setup((
+            sqlite_open(foo, DB, [memory(true),mode(write),foreign_keys(true)]),
+            foreign_keys_setup(DB) )),
+        cleanup(sqlite_close(DB)),
+        error(sqlite_error(_, _, _, 'FOREIGN KEY constraint failed')) ]) :-
+    sqlite_command(DB, "insert into c ( x, y ) values ( 'foo', 'bar' )").
+
+test(open_foreign_keys_false, [
+        setup((
+            sqlite_open(foo, DB, [memory(true),mode(write),foreign_keys(false)]),
+            foreign_keys_setup(DB) )),
+        cleanup(sqlite_close(DB)),
+        Row == row("foo", "bar") ] ):-
+    sqlite_command(DB, "insert into c ( x, y ) values ( 'foo', 'bar' )"),
+    sqlite_query_all(DB, "select * from c", [Row]).
+
 test(close_not_connection) :-
     sqlite_open(foo, DB, [memory(true)]),
     catch(sqlite_close(some_atom),
         error(type_error('sqlite_connection', some_atom), _),
         sqlite_close(DB)).
+
+:- end_tests(connection).
+
+:- begin_tests(statement).
 
 test(prepare_nonvar, [
         setup(sqlite_open(foo, DB, [memory(true)])),
@@ -109,9 +149,6 @@ test(prepare_nonvar, [
 test(prepare_not_connection, [error(type_error(sqlite_connection,10))]) :-
     sqlite_prepare(10, "select 1;", _Stmt).
 
-:- end_tests(connection).
-
-:- begin_tests(statement).
 
 test(prepare_not_text, [
         setup(sqlite_open(foo, DB, [memory(true)])),
@@ -202,16 +239,30 @@ test(bind_numbered, [
 test(bind_unicode, [
         setup((
             sqlite_open(foo, DB, [memory(true)]),
-            sqlite_prepare(DB, 'select ?1,?2,?3', S) )),
+            sqlite_prepare(DB, 'select ?1,?2,?3,?4', S) )),
         cleanup((
             sqlite_finalize(S),
             sqlite_close(DB) )),
         true([
-            Cols == cols('?1','?2','?3'),
-            SQL == 'select ?1,?2,?3',
-            SQLE == "select 'щип','щибиди дип','дип'" ]) ]) :-
+            Cols == cols('?1','?2','?3','?4'),
+            SQL == 'select ?1,?2,?3,?4',
+            SQLE == "select 'щип','щибиди дип','дип','ab'" ]) ]) :-
     sqlite_column_names(S, Cols),
-    sqlite_bind(S, bv(`щип`, 'щибиди дип', "дип")),
+    sqlite_bind(S, bv(`щип`, 'щибиди дип', "дип", [97,98])),
+    sqlite_sql(S, SQL),
+    sqlite_expanded_sql(S, SQLE).
+
+test(bind_list_of_codes, [
+        setup((
+            sqlite_open(foo, DB, [memory(true)]),
+            sqlite_prepare(DB, 'select ?1', S) )),
+        cleanup((
+            sqlite_finalize(S),
+            sqlite_close(DB) )),
+        true([
+            SQL == 'select ?1',
+            SQLE == "select 'ab'" ]) ]) :-
+    sqlite_bind(S, bv([97,98])),
     sqlite_sql(S, SQL),
     sqlite_expanded_sql(S, SQLE).
 
@@ -343,27 +394,16 @@ test(colnames_none, [
 :- begin_tests(evaluate).
 
 test(create_insert, [
-        setup((
-            sqlite_open(foo, DB, [mode(create),memory(true)]),
-            sqlite_prepare(DB, 'create table x ( y number )', S) )),
-        cleanup((
-            sqlite_finalize(S),
-            sqlite_close(DB) )) ]) :-
-    sqlite_do(S),
-    setup_call_cleanup(
-        sqlite_prepare(DB, 'insert into x values ( 1 )', I),
-        sqlite_do(I),
-        sqlite_finalize(I)).
+        setup( sqlite_open(foo, DB, [mode(create),memory(true)]) ),
+        cleanup( sqlite_close(DB) ) ]) :-
+    sqlite_command(DB, 'create table x ( y number )'),
+    sqlite_command(DB, 'insert into x values ( 1 )').
 
 test(select_noresult, [
-        setup((
-            sqlite_open(foo, DB, [memory(true)]),
-            sqlite_prepare(DB, 'select 1', S) )),
-        cleanup((
-            sqlite_finalize(S),
-            sqlite_close(DB) )),
+        setup( sqlite_open(foo, DB, [memory(true)]) ),
+        cleanup( sqlite_close(DB) ),
         error(swiplite_error('non-empty result set', command),_) ]) :-
-    sqlite_do(S).
+    sqlite_command(DB, 'select 1').
 :- end_tests(evaluate).
 
 :- begin_tests(select).
@@ -430,32 +470,27 @@ test(select_one_cols, [
 test(reeval, [
         setup((
             sqlite_open('foo.db', DB, [mode(create)]),
-            sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_do(Create),
-            sqlite_finalize(Create),
-            sqlite_prepare(DB, "Begin", Begin),
-            sqlite_prepare(DB, "Insert into x values ( ?1 )", Insert),
-            sqlite_prepare(DB, "End", End),
-            sqlite_prepare(DB, "Select min(y), max(y) from x", Select) )),
+            sqlite_command(DB, "Create table x ( y number )") )),
         cleanup((
-            maplist(sqlite_finalize, [Begin, Insert, End, Select]),
             sqlite_close(DB),
             delete_file('foo.db') )),
         true(R == row(1, 10 000)) ]) :-
-    sqlite_do(Begin),
-    forall(between(1, 10 000, X),
-        (   sqlite_bind(Insert, bv(X)),
-            sqlite_do(Insert)
-        )),
-    sqlite_do(End),
-    sqlite_one(Select,  R).
+    sqlite_command(DB, "Begin"),
+    setup_call_cleanup(sqlite_prepare(DB, "Insert into x values ( ?1 )", Insert),
+        forall(between(1, 10 000, X),
+            (   sqlite_bind(Insert, bv(X)),
+                sqlite_do(Insert)
+            )),
+        sqlite_finalize(Insert)),
+    sqlite_command(DB, "End"),
+    setup_call_cleanup(sqlite_prepare(DB, "Select min(y), max(y) from x", S),
+        sqlite_one(S, R),
+        sqlite_finalize(S)).
 
 test(eval_insert_noresult, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_do(Create),
-            sqlite_finalize(Create),
+            sqlite_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values ( 6 )", Insert),
             sqlite_prepare(DB, "Select y from x", Select) )),
         cleanup((
@@ -469,9 +504,7 @@ test(eval_insert_noresult, [
 test(select_some_double_use_reset, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_do(Create),
-            sqlite_finalize(Create),
+            sqlite_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values ( ?1 )", Insert),
             sqlite_prepare(DB,
                 "Select y from x where y % 2 = ?1 order by y asc",
@@ -496,9 +529,7 @@ test(select_some_double_use_reset, [
 test(select_all_rows, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_do(Create),
-            sqlite_finalize(Create),
+            sqlite_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values ( ?1 )", Insert),
             sqlite_prepare(DB, "Select y from x order by y asc", Select) )),
         cleanup((
@@ -518,9 +549,7 @@ test(select_all_rows, [
 test(select_more_rows, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_do(Create),
-            sqlite_finalize(Create),
+            sqlite_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values (1),(2),(3)", Insert),
             sqlite_prepare(DB, "Select y from x order by y asc", Select) )),
         cleanup((
@@ -539,9 +568,7 @@ test(select_more_rows, [
 test(select_some_rows, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_do(Create),
-            sqlite_finalize(Create),
+            sqlite_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values ( ?1 )", Insert),
             sqlite_prepare(DB, "Select y from x order by y desc", Select) )),
         cleanup((
@@ -582,9 +609,7 @@ test(select_row_not_select, [
 test(select_row_no_rows, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_do(Create),
-            sqlite_finalize(Create),
+            sqlite_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Select y from x", Select) )),
         cleanup((
             sqlite_finalize(Select),
@@ -595,9 +620,7 @@ test(select_row_no_rows, [
 test(select_row_one_row, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_do(Create),
-            sqlite_finalize(Create),
+            sqlite_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values (5)", Insert),
             sqlite_do(Insert),
             sqlite_prepare(DB, "Select y from x", Select) )),
@@ -610,9 +633,7 @@ test(select_row_one_row, [
 test(select_row_two_rows, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_do(Create),
-            sqlite_finalize(Create),
+            sqlite_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values (5), (10)", Insert),
             sqlite_do(Insert),
             sqlite_prepare(DB, "Select y from x order by y asc", Select) )),
@@ -625,9 +646,7 @@ test(select_row_two_rows, [
 test(select_row_prune, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_prepare(DB, "Create table x ( y number )", Create),
-            sqlite_do(Create),
-            sqlite_finalize(Create),
+            sqlite_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values (5), (10)", Insert),
             sqlite_do(Insert),
             sqlite_prepare(DB, "Select y from x order by y asc", Select) )),
@@ -643,3 +662,203 @@ test(select_row_prune, [
     findall(X, sqlite_row(Select, X), R3).
 
 :- end_tests(select).
+
+:- begin_tests(status).
+
+test(query_schema, [
+        setup((
+            sqlite_open(foo, DB, [memory(true),mode(write)]),
+            sqlite_command(DB, "Create table x ( y integer, z text )"),
+            sqlite_command(DB, "Create table foo ( bar, baz )") )),
+        cleanup((
+            sqlite_close(DB) )),
+        true(Schema == [
+                row("CREATE TABLE x ( y integer, z text )"),
+                row("CREATE TABLE foo ( bar, baz )")
+            ]) ]) :-
+    sqlite_schema(DB, Schema).
+
+test(status_op_not_atom, error(type_error(atom, 1))) :-
+    sqlite_status(1, _C, _H, false).
+
+test(status_op_not_defined, error(domain_error(_, foobar))) :-
+    sqlite_status(foobar, _C, _H, false).
+
+test(status_nonvar_arg_c, error(uninstantiation_error(0))) :-
+    sqlite_status(malloc_size, 0, _, false).
+
+test(status_nonvar_arg_h, error(uninstantiation_error(0))) :-
+    sqlite_status(malloc_size, _, 0, false).
+
+test(status_reset_not_bool, error(type_error(bool, hello))) :-
+    sqlite_status(malloc_size, _, _, hello).
+
+test(db_status_not_db, error(type_error(sqlite_connection, 0))) :-
+    sqlite_db_status(0, stmt_used, _, _, false).
+
+test(db_status_op_not_atom, [
+        setup(sqlite_open(foo, DB, [memory(true)])),
+        cleanup(sqlite_close(DB)),
+        error(type_error(atom, 1)) ] ) :-
+    sqlite_db_status(DB, 1, _, _, false).
+
+test(db_status_op_not_defined, [
+        setup(sqlite_open(foo, DB, [memory(true)])),
+        cleanup(sqlite_close(DB)),
+        error(domain_error(_, foobar)) ] ) :-
+    sqlite_db_status(DB, foobar, _, _, false).
+
+test(db_status_reset_not_bool, [
+        setup(sqlite_open(foo, DB, [memory(true)])),
+        cleanup(sqlite_close(DB)),
+        error(type_error(bool, -1)) ] ) :-
+    sqlite_db_status(DB, stmt_used, _, _, -1).
+
+test(db_status_nonvar_arg_c, [
+        setup(sqlite_open(foo, DB, [memory(true)])),
+        cleanup(sqlite_close(DB)),
+        error(uninstantiation_error(0)) ] ) :-
+    sqlite_db_status(DB, stmt_used, 0, _, false).
+
+test(db_status_nonvar_arg_h, [
+        setup(sqlite_open(foo, DB, [memory(true)])),
+        cleanup(sqlite_close(DB)),
+        error(uninstantiation_error(0)) ] ) :-
+    sqlite_db_status(DB, stmt_used, _, 0, false).
+
+test(stmt_status_not_stmt, error(type_error(_, 0))) :-
+    sqlite_stmt_status(0, sort, _, false).
+
+test(stmt_status_op_not_atom, [
+        setup((
+            sqlite_open(foo, DB, [memory(true)]),
+            sqlite_prepare(DB, 'select 1', S)
+        )),
+        cleanup((
+            sqlite_finalize(S),
+            sqlite_close(DB)
+        )),
+        error(type_error(atom, 1)) ] ) :-
+    sqlite_stmt_status(S, 1, _, false).
+
+test(stmt_status_op_not_defined, [
+        setup((
+            sqlite_open(foo, DB, [memory(true)]),
+            sqlite_prepare(DB, 'select 1', S)
+        )),
+        cleanup((
+            sqlite_finalize(S),
+            sqlite_close(DB)
+        )),
+        error(domain_error(_, foobar)) ] ) :-
+    sqlite_stmt_status(S, foobar, _, false).
+
+test(stmt_status_reset_not_bool, [
+        setup((
+            sqlite_open(foo, DB, [memory(true)]),
+            sqlite_prepare(DB, 'select 1', S)
+        )),
+        cleanup((
+            sqlite_finalize(S),
+            sqlite_close(DB)
+        )),
+        error(type_error(bool, -1)) ] ) :-
+    sqlite_stmt_status(S, sort, _, -1).
+
+test(stmt_status_nonvar_arg, [
+        setup((
+            sqlite_open(foo, DB, [memory(true)]),
+            sqlite_prepare(DB, 'select 1', S)
+        )),
+        cleanup((
+            sqlite_finalize(S),
+            sqlite_close(DB)
+        )),
+        error(uninstantiation_error(0)) ] ) :-
+    sqlite_stmt_status(S, sort, 0, false).
+
+test(statement_status, [
+        setup((
+            sqlite_open(foo, DB, [memory(true)]),
+            sqlite_prepare(DB, "select ?1", S),
+            sqlite_bind(S, bv(0)),
+            sqlite_one(S, row(_))
+        )),
+        cleanup((
+            sqlite_finalize(S),
+            sqlite_close(DB)
+        )),
+        forall((
+            member(Code, [
+                    fullscan_step,
+                    sort,
+                    autoindex,
+                    vm_step,
+                    reprepare,
+                    run,
+                    filter_miss,
+                    filter_hit,
+                    memused
+                ]),
+            (   Reset = false
+            ;   Reset = true
+            )
+        )) ]) :-
+    sqlite_stmt_status(S, Code, Result, Reset),
+    assertion(integer(Result)).
+
+test(connection_status, [
+        setup((
+            sqlite_open(foo, DB, [memory(true)]),
+            sqlite_prepare(DB, "select ?1", S),
+            sqlite_bind(S, bv(0)),
+            sqlite_one(S, row(_))
+        )),
+        cleanup((
+            sqlite_finalize(S),
+            sqlite_close(DB)
+        )),
+        forall((
+            member(Code, [
+                    lookaside_used,
+                    cache_used,
+                    schema_used,
+                    stmt_used,
+                    lookaside_hit,
+                    lookaside_miss_size,
+                    lookaside_miss_full,
+                    cache_hit,
+                    cache_miss,
+                    cache_write,
+                    deferred_fks,
+                    cache_used_shared,
+                    cache_spill
+                ]),
+            (   Reset = false
+            ;   Reset = true
+            )
+        )) ]) :-
+    sqlite_db_status(DB, Code, C, H, Reset),
+    assertion(integer(C)),
+    assertion(integer(H)).
+
+test(database_status, [
+        forall((
+            member(Code, [
+                    memory_used,
+                    pagecache_used,
+                    pagecache_overflow,
+                    malloc_size,
+                    parser_stack,
+                    pagecache_size,
+                    malloc_count
+                ]),
+            (   Reset = false
+            ;   Reset = true
+            )
+        )) ]) :-
+    sqlite_status(Code, C, H, Reset),
+    assertion(integer(C)),
+    assertion(integer(H)).
+
+:- end_tests(status).

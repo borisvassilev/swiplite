@@ -97,6 +97,44 @@ are mapped to the following Prolog types, or an error is thrown:
 | NULL                  | nil                 |
 | BLOB                  | (type_error)        |
 
+## Foreign keys
+[Foreign keys in SQLite](https://www.sqlite.org/foreignkeys.html) must
+be enabled explicitly. First, the library must be compiled with neither of
+these two compile options defined:
+
+ * `SQLITE_OMIT_FOREIGN_KEY`
+ * `SQLITE_OMIT_TRIGGER`
+
+In addition, for each connection, the application must enable foreign keys
+with [PRAGMA `foreign_keys`](https://www.sqlite.org/pragma.html#pragma_foreign_keys).
+
+The PRAGMA can be used to check if the currently used version of SQLite
+supports foreign keys. This query:
+
+```sql
+PRAGMA foreign_keys;
+```
+
+... will **not return rows** if the SQLite version does **not support**
+foreign keys. It will return 0 or 1 to indicate that foreign key constraints
+are currently disabled (0) or enabled (1). It can be switched on and off
+with:
+
+```sql
+PRAGMA foreign_keys = ON;
+PRAGMA foreign_keys = OFF;
+```
+
+This library makes the following design decisions:
+
+ * Foreign keys are required and enabled by default
+ * If requested when obtaining a connection, foreign keys can be disabled
+   for this connection. In that case, it is allowed to use an SQLite
+   version that has been compiled without foreign key support
+ * Trying to enable foreign keys for an SQLite version that **does not**
+   support them will throw an error. In contrast, as of SQLite 3.50.4,
+   on 2025-10-06, issuing `PRAGMA foreign_keys = ON;` on a database that
+   does not support foreign keys silently succeeds.
 
 ## Schema
 SQLite provides a couple of mechanisms for introspection. There
@@ -113,3 +151,11 @@ the `sql` column of the `sqlite_schema` table.
 SQLite `PRAGMA`s that have a result set can be accessed as if
 they were Select statements.
 
+## Database statistics
+The library provides access to the following functions:
+ * [`sqlite3_db_status()`](https://www.sqlite.org/c3ref/db_status.html)
+ * [`sqlite3_status()`](https://www.sqlite.org/c3ref/status.html)
+ * [`sqlite3_stmt_status()`](https://www.sqlite.org/c3ref/stmt_status.html)
+
+Those are implemented in `sqlite_status/4`, `sqlite_db_status/5`, and
+`sqlite_stmt_status/4`.

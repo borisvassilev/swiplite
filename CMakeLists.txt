@@ -8,6 +8,10 @@ include(swipl)
 # Create the library as a CMake module
 add_library(swiplite MODULE c/swiplite.c)
 
+# The line below can be used to test with an SQLite installation
+# that *does not* support foreign keys
+#add_compile_definitions(SQLITE_OMIT_FOREIGN_KEY)
+
 # Link the library to SWI-Prolog.  This also removes the `lib` prefix
 # from the target on systems that define a common library file prefix
 target_link_swipl(swiplite)
