@@ -6,6 +6,12 @@ efficiency.
 The [`sqlite` module](prolog/sqlite.pl) provides low-level
 access to the connection and statement objects.
 
+In addition to this document, there is a discussion on the
+[specifics of SQLite](SQLITEDOC.md) in comparison to other
+relational databases. There is [another document](DEVELOPMENT.md)
+summarizing information about the development process of the
+library.
+
 ## Requirements
 This has been developed and tested on Linux and Mac OS.
 
@@ -106,7 +112,7 @@ V = '3.47.2'.
 ```
 
 The predicate `sqlite_version/1` opens an in-memory SQLite
-database and queries "`Select sqlite_version()`".
+database and queries `Select sqlite_version()`.
 
 ## Background
 There are _many_ alternatives to using the `swiplite` pack.
@@ -131,7 +137,7 @@ SQLite provides a full-featured relational database _almost_
 for free, in terms of setup and resources needed.
 
 ### Why not ODBC?
-SWI-Prolog provides a full-features [ODBC interface](https://www.swi-prolog.org/pldoc/doc_for?object=section(%27packages/odbc.html%27)).
+SWI-Prolog provides a full-featured [ODBC interface](<https://www.swi-prolog.org/pldoc/doc_for?object=section(%27packages/odbc.html%27)>).
 However, specifically in the case of SQLite, it requires a
 [clumsy setup with extra dependencies](https://swi-prolog.discourse.group/t/connecting-to-sqlite3-with-odbc-choosing-a-database-file/6387?u=boris)
 and no obvious benefit.
@@ -148,3 +154,4 @@ to them.
 It is very likely that prepared statements are not _that_
 important. On the other hand, there is the cautionary tale
 of [Little Bobby Tables](https://xkcd.com/327/).
+

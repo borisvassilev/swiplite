@@ -66,7 +66,7 @@ If you now consult this file:
 ?- [debug].
 ```
 
-you get a documentation server running at `http://localhost:4000/pldoc/`
+you get a documentation server running at <http://localhost:4000/pldoc/>
 and you can use the exported predicates, or run all tests with
 ```
 ?- run_tests.
