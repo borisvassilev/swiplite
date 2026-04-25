@@ -95,9 +95,9 @@ test(open_bad_threaded, [error(domain_error(_,bad_threaded))] ) :-
     sqlite_open(foo, _, [threaded(bad_threaded)]).
 
 foreign_keys_setup(DB) :-
-    sqlite_command(DB, "create table a ( x primary key )"),
-    sqlite_command(DB, "create table b ( y primary key )"),
-    sqlite_command(DB,
+    sql_command(DB, "create table a ( x primary key )"),
+    sql_command(DB, "create table b ( y primary key )"),
+    sql_command(DB,
             "create table c (
                 x, y,
                 foreign key ( x ) references a ( x ),
@@ -111,7 +111,7 @@ test(foreign_keys_default, [
             foreign_keys_setup(DB) )),
         cleanup(sqlite_close(DB)),
         error(sqlite_error(_, _, _, 'FOREIGN KEY constraint failed')) ]) :-
-    sqlite_command(DB, "insert into c ( x, y ) values ( 'foo', 'bar' )").
+    sql_command(DB, "insert into c ( x, y ) values ( 'foo', 'bar' )").
 
 test(open_foreign_keys_explicit, [
         setup((
@@ -119,7 +119,7 @@ test(open_foreign_keys_explicit, [
             foreign_keys_setup(DB) )),
         cleanup(sqlite_close(DB)),
         error(sqlite_error(_, _, _, 'FOREIGN KEY constraint failed')) ]) :-
-    sqlite_command(DB, "insert into c ( x, y ) values ( 'foo', 'bar' )").
+    sql_command(DB, "insert into c ( x, y ) values ( 'foo', 'bar' )").
 
 test(open_foreign_keys_false, [
         setup((
@@ -127,8 +127,8 @@ test(open_foreign_keys_false, [
             foreign_keys_setup(DB) )),
         cleanup(sqlite_close(DB)),
         Row == row("foo", "bar") ] ):-
-    sqlite_command(DB, "insert into c ( x, y ) values ( 'foo', 'bar' )"),
-    sqlite_query_all(DB, "select * from c", [Row]).
+    sql_command(DB, "insert into c ( x, y ) values ( 'foo', 'bar' )"),
+    sql_query_all(DB, "select * from c", [Row]).
 
 test(close_not_connection) :-
     sqlite_open(foo, DB, [memory(true)]),
@@ -156,11 +156,42 @@ test(prepare_not_text, [
         error(type_error(text,10)) ]) :-
     sqlite_prepare(DB, 10, _Stmt).
 
+test(prepare_empty_stmt, [
+        setup(sqlite_open(foo, DB, [memory(true)])),
+        cleanup(sqlite_close(DB)),
+        fail ]) :-
+    sqlite_prepare(DB, "-- just a comment", _Stmt).
+
 test(prepare_bad_stmt, [
         setup(sqlite_open(foo, DB, [memory(true)])),
         cleanup(sqlite_close(DB)),
         error(sqlite_error(sqlite_prepare,_,_,_), _) ]) :-
     sqlite_prepare(DB, "this isn't SQL", _Stmt).
+
+test(prepare_stmt_rest, [
+        setup(sqlite_open(foo, DB, [memory(true)])),
+        cleanup(sqlite_close(DB)),
+        SQL1 == "select 1;",
+        SQL2 == "select 2;" ]) :-
+    setup_call_cleanup(
+        sqlite_prepare(DB, "select 1;select 2; -- this is a comment",
+                Stmt1, [rest(Rest)]),
+        setup_call_cleanup(sqlite_prepare(DB, Rest, Stmt2),
+            (   sqlite_expanded_sql(Stmt1, SQL1),
+                sqlite_expanded_sql(Stmt2, SQL2)
+            ),
+            sqlite_finalize(Stmt2)),
+        sqlite_finalize(Stmt1)).
+
+test(prepare_stmt_rest_comment, [
+        setup(sqlite_open(foo, DB, [memory(true)])),
+        cleanup(sqlite_close(DB)),
+        Rest == " -- this is a comment",
+        SQL == "select 1;" ]) :-
+    setup_call_cleanup(
+        sqlite_prepare(DB, "select 1; -- this is a comment", Stmt, [rest(Rest)]),
+        sqlite_expanded_sql(Stmt, SQL),
+        sqlite_finalize(Stmt)).
 
 test(prepare_badly_numbered, [
         setup(sqlite_open(foo, DB, [memory(true)])),
@@ -211,13 +242,14 @@ test(bind_closed_statement, [
 test(bind, [
         setup((
             sqlite_open(foo, DB, [memory(true)]),
-            sqlite_prepare(DB, 'select ?1,?2,?3,?4,?5,?6', S) )),
+            sqlite_prepare(DB, 'select ?1,?2,?3,?4,?5,?6',
+                    S, [bind_parameter_count(N)]) )),
         cleanup((
             sqlite_finalize(S),
             sqlite_close(DB) )),
-        true([
-            SQL == 'select ?1,?2,?3,?4,?5,?6',
-            SQLE == "select 1,2.2,NULL,'foo','bar','baz'" ]) ]) :-
+        SQL == 'select ?1,?2,?3,?4,?5,?6',
+        SQLE == "select 1,2.2,NULL,'foo','bar','baz'",
+        N == 6 ]) :-
     sqlite_bind(S, bv(1,2.2,[],"foo",bar,`baz`)),
     sqlite_sql(S, SQL),
     sqlite_expanded_sql(S, SQLE).
@@ -225,13 +257,14 @@ test(bind, [
 test(bind_numbered, [
         setup((
             sqlite_open(foo, DB, [memory(true)]),
-            sqlite_prepare(DB, 'select ?2,?1,?1,?2', S) )),
+            sqlite_prepare(DB, 'select ?2,?1,?1,?2',
+                    S, [bind_parameter_count(N)]) )),
         cleanup((
             sqlite_finalize(S),
             sqlite_close(DB) )),
-        true([
-            SQL == 'select ?2,?1,?1,?2',
-            SQLE == "select 2.2,1,1,2.2" ]) ]) :-
+        SQL == 'select ?2,?1,?1,?2',
+        SQLE == "select 2.2,1,1,2.2",
+        N == 2 ]) :-
     sqlite_bind(S, bv(1,2.2)),
     sqlite_sql(S, SQL),
     sqlite_expanded_sql(S, SQLE).
@@ -396,14 +429,14 @@ test(colnames_none, [
 test(create_insert, [
         setup( sqlite_open(foo, DB, [mode(create),memory(true)]) ),
         cleanup( sqlite_close(DB) ) ]) :-
-    sqlite_command(DB, 'create table x ( y number )'),
-    sqlite_command(DB, 'insert into x values ( 1 )').
+    sql_command(DB, 'create table x ( y number )'),
+    sql_command(DB, 'insert into x values ( 1 )').
 
 test(select_noresult, [
         setup( sqlite_open(foo, DB, [memory(true)]) ),
         cleanup( sqlite_close(DB) ),
         error(swiplite_error('non-empty result set', command),_) ]) :-
-    sqlite_command(DB, 'select 1').
+    sql_command(DB, 'select 1').
 :- end_tests(evaluate).
 
 :- begin_tests(select).
@@ -470,19 +503,19 @@ test(select_one_cols, [
 test(reeval, [
         setup((
             sqlite_open('foo.db', DB, [mode(create)]),
-            sqlite_command(DB, "Create table x ( y number )") )),
+            sql_command(DB, "Create table x ( y number )") )),
         cleanup((
             sqlite_close(DB),
             delete_file('foo.db') )),
         true(R == row(1, 10 000)) ]) :-
-    sqlite_command(DB, "Begin"),
+    sql_command(DB, "Begin"),
     setup_call_cleanup(sqlite_prepare(DB, "Insert into x values ( ?1 )", Insert),
         forall(between(1, 10 000, X),
             (   sqlite_bind(Insert, bv(X)),
                 sqlite_do(Insert)
             )),
         sqlite_finalize(Insert)),
-    sqlite_command(DB, "End"),
+    sql_command(DB, "End"),
     setup_call_cleanup(sqlite_prepare(DB, "Select min(y), max(y) from x", S),
         sqlite_one(S, R),
         sqlite_finalize(S)).
@@ -490,7 +523,7 @@ test(reeval, [
 test(eval_insert_noresult, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_command(DB, "Create table x ( y number )"),
+            sql_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values ( 6 )", Insert),
             sqlite_prepare(DB, "Select y from x", Select) )),
         cleanup((
@@ -504,7 +537,7 @@ test(eval_insert_noresult, [
 test(select_some_double_use_reset, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_command(DB, "Create table x ( y number )"),
+            sql_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values ( ?1 )", Insert),
             sqlite_prepare(DB,
                 "Select y from x where y % 2 = ?1 order by y asc",
@@ -529,7 +562,7 @@ test(select_some_double_use_reset, [
 test(select_all_rows, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_command(DB, "Create table x ( y number )"),
+            sql_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values ( ?1 )", Insert),
             sqlite_prepare(DB, "Select y from x order by y asc", Select) )),
         cleanup((
@@ -549,7 +582,7 @@ test(select_all_rows, [
 test(select_more_rows, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_command(DB, "Create table x ( y number )"),
+            sql_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values (1),(2),(3)", Insert),
             sqlite_prepare(DB, "Select y from x order by y asc", Select) )),
         cleanup((
@@ -568,7 +601,7 @@ test(select_more_rows, [
 test(select_some_rows, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_command(DB, "Create table x ( y number )"),
+            sql_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values ( ?1 )", Insert),
             sqlite_prepare(DB, "Select y from x order by y desc", Select) )),
         cleanup((
@@ -609,7 +642,7 @@ test(select_row_not_select, [
 test(select_row_no_rows, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_command(DB, "Create table x ( y number )"),
+            sql_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Select y from x", Select) )),
         cleanup((
             sqlite_finalize(Select),
@@ -620,7 +653,7 @@ test(select_row_no_rows, [
 test(select_row_one_row, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_command(DB, "Create table x ( y number )"),
+            sql_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values (5)", Insert),
             sqlite_do(Insert),
             sqlite_prepare(DB, "Select y from x", Select) )),
@@ -633,7 +666,7 @@ test(select_row_one_row, [
 test(select_row_two_rows, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_command(DB, "Create table x ( y number )"),
+            sql_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values (5), (10)", Insert),
             sqlite_do(Insert),
             sqlite_prepare(DB, "Select y from x order by y asc", Select) )),
@@ -646,7 +679,7 @@ test(select_row_two_rows, [
 test(select_row_prune, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_command(DB, "Create table x ( y number )"),
+            sql_command(DB, "Create table x ( y number )"),
             sqlite_prepare(DB, "Insert into x values (5), (10)", Insert),
             sqlite_do(Insert),
             sqlite_prepare(DB, "Select y from x order by y asc", Select) )),
@@ -668,8 +701,8 @@ test(select_row_prune, [
 test(query_schema, [
         setup((
             sqlite_open(foo, DB, [memory(true),mode(write)]),
-            sqlite_command(DB, "Create table x ( y integer, z text )"),
-            sqlite_command(DB, "Create table foo ( bar, baz )") )),
+            sql_command(DB, "Create table x ( y integer, z text )"),
+            sql_command(DB, "Create table foo ( bar, baz )") )),
         cleanup((
             sqlite_close(DB) )),
         true(Schema == [

@@ -22,14 +22,17 @@ FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
 OTHER DEALINGS IN THE SOFTWARE.
 */
 :- module(sqlite, [
+            sql_command/2,
+            sql_query/3,
+            sql_query_all/3,
+            sqlite_initialize/0,
+            sqlite_shutdown/0,
             sqlite_version/1,
-            sqlite_command/2,
-            sqlite_query/3,
-            sqlite_query_all/3,
             sqlite_schema/2,
             sqlite_open/3,
             sqlite_close/1,
             sqlite_prepare/3,
+            sqlite_prepare/4,
             sqlite_bind/2,
             sqlite_reset/1,
             sqlite_sql/2,
@@ -98,13 +101,11 @@ Unify Version with the version of SQLite currently in use
 */
 sqlite_version(V) :-
     setup_call_cleanup(sqlite_open('', DB, [memory(true)]),
-        setup_call_cleanup(sqlite_prepare(DB, "select sqlite_version()", S),
-            sqlite_one(S, row(V0)),
-            sqlite_finalize(S)),
+        sql_query_all(DB, "select sqlite_version()", [row(V0)]),
         sqlite_close(DB)),
     atom_string(V, V0).
 
-/** sqlite_command(++Connection:blob, ++SQL:text) is det
+/** sql_command(++Connection:blob, ++SQL:text) is det
 
 Execute the command in SQL.
 
@@ -113,13 +114,26 @@ it does not return any rows.
 
 @arg Connection A database connection obtained with sqlite_open/3
 @arg SQL The text of the command to be executed
+
+@tbd Allow the user to supply a generator for bind values
 */
-sqlite_command(DB, SQL) :-
-    setup_call_cleanup(sqlite_prepare(DB, SQL, S),
+sql_command(DB, SQL) :-
+    setup_call_cleanup(sqlite_prepare(DB, SQL, S, [bind_parameter_count(0)]),
         sqlite_do(S),
         sqlite_finalize(S)).
 
-/** sqlite_query(++Connection:blob, ++SQL:text, -Row:row) is semidet
+/*
+sql_command(DB, SQL, Bind_vars, Generator) :-
+    setup_call_cleanup(sqlite_prepare(DB, SQL, S),
+        sql_transaction(DB,
+            forall(call(Generator, Bind_vars),
+                (   sqlite_bind(S, Bind_vars),
+                    sqlite_do(S)
+                ))),
+        sqlite_finalize(S)).
+*/
+
+/** sql_query(++Connection:blob, ++SQL:text, -Row:row) is semidet
 
 Get rows from the result set of the statement in SQL on backtracking.
 
@@ -129,12 +143,12 @@ If the result set is empty, fail.
 @arg SQL The text of the command to be executed
 @arg Row Unified with row(Col1, Col2, ...) on backtracking
 */
-sqlite_query(DB, SQL, Row) :-
-    setup_call_cleanup(sqlite_prepare(DB, SQL, S),
+sql_query(DB, SQL, Row) :-
+    setup_call_cleanup(sqlite_prepare(DB, SQL, S, [bind_parameter_count(0)]),
         sqlite_row(S, Row),
         sqlite_finalize(S)).
 
-/** sqlite_query_all(++Connection:blob, ++SQL:text, -Rows:list(row)) is semidet
+/** sql_query_all(++Connection:blob, ++SQL:text, -Rows:list(row)) is semidet
 
 Get all rows from the result set of the statement in SQL as a list in Rows.
 
@@ -142,8 +156,8 @@ Get all rows from the result set of the statement in SQL as a list in Rows.
 @arg SQL The text of the command to be executed
 @arg Rows The list of rows with all rows in the result set
 */
-sqlite_query_all(DB, SQL, Rs) :-
-    setup_call_cleanup(sqlite_prepare(DB, SQL, S),
+sql_query_all(DB, SQL, Rs) :-
+    setup_call_cleanup(sqlite_prepare(DB, SQL, S, [bind_parameter_count(0)]),
         sqlite_many(S, _, Rs, []),
         sqlite_finalize(S)).
 
@@ -236,7 +250,49 @@ Close a Connection opened with sqlite_open/3
 @see [`sqlite3_close_v2()`](https://www.sqlite.org/c3ref/close.html)
 */
 
+/** sqlite_prepare(++Connection:blob, ++SQL:text, -Statement:blob, ++Options) is det
+
+Compile Statement from the text in SQL using the database in Connection,
+using the provided options
+
+The UTF-8 encoded text in SQL is parsed up to the first nul, or
+up to the end of the first SQL statement. SQL parameters are
+initially all set to =|NULL|=. Anonymous variables are not allowed.
+If *|?|*_|NNN|_ parameters are used, they must be numbered
+starting from 1, without any gaps.
+
+Two options are supported. If the option =|bind_parameter_count(Value)|=
+is provided, Value is unified with the number of bind variables in the
+prepared statement.
+
+If the option =|rest(SQL_rest)|= is provided, the trailing content of SQL is
+unified with SQL_rest as a string.
+
+@arg Connection A database connection obtained with sqlite_open/3
+@arg SQL The UTF8-encoded text of the SQL as text
+
+@see sqlite_bind/2
+@see [SQL statement parameters in SQLite](https://www.sqlite.org/lang_expr.html#varparam)
+@see [`sqlite3_bind_parameter_count()`](https://www.sqlite.org/c3ref/bind_parameter_count.html)
+*/
+sqlite_prepare(Connection, SQL, Statement) :-
+    sqlite_prepare(Connection, SQL, Statement, []).
+
+
 /** sqlite_prepare(++Connection:blob, ++SQL:text, -Statement:blob) is det
+
+Compile Statement from the text in SQL using the database in Connection;
+same as sqlite_prepare/4 with empty options list
+
+@arg Connection A database connection obtained with sqlite_open/3
+@arg SQL The UTF8-encoded text of the SQL as text
+
+@see sqlite_prepare/4
+*/
+
+/* sqlite_prepare(
+            ++Connection:blob, ++SQL:text,
+            -Statement:blob, -N_bind:integer, -Rest:string) is det
 
 Compile Statement from the text in SQL using the database in Connection
 
@@ -249,11 +305,12 @@ starting from 1, without any gaps.
 @arg Connection A database connection obtained with sqlite_open/3
 @arg SQL The UTF8-encoded text of the SQL as an atom, string,
          or list of codes
+@arg N_bind The number of bind parameters in the statement
+@arg Rest A UTF8-encoded string containing the trailing content of SQL
 
 @see sqlite_bind/2
 @see [SQL statement parameters in SQLite](https://www.sqlite.org/lang_expr.html#varparam)
 @see [`sqlite3_bind_parameter_count()`](https://www.sqlite.org/c3ref/bind_parameter_count.html)
-@tbd Do something with the rest of the text in SQL
 */
 
 /** sqlite_finalize(++Statement:blob) is det

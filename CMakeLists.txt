@@ -16,6 +16,15 @@ add_library(swiplite MODULE c/swiplite.c)
 # from the target on systems that define a common library file prefix
 target_link_swipl(swiplite)
 
+set(HOMEBREW_PREFIX "/opt/homebrew"
+    CACHE PATH "Path to Homebrew installation")
+
+set(CMAKE_PREFIX_PATH
+    "${HOMEBREW_PREFIX}"
+    # These libraries are keg-only and not loaded into
+    # the root prefix by default (to avoid clashes).
+    "${HOMEBREW_PREFIX}/opt/sqlite3"
+)
 find_package(SQLite3 REQUIRED)
 target_link_libraries(swiplite PRIVATE ${SQLite3_LIBRARIES})
 target_include_directories(swiplite PRIVATE ${SQLite3_INCLUDE_DIRS})

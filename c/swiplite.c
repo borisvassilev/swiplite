@@ -62,6 +62,22 @@ swiplite_error(const char *error, const char *more)
             && PL_raise_exception(e));
 }
 
+/* Initialize and shutdown */
+
+foreign_t
+pl_sqlite_initialize(void)
+{
+    int r = sqlite3_initialize();
+    if (SQLITE_OK == r) return true;
+    return swiplite_error("sqlite3_initialize", sqlite3_errstr(r));
+}
+
+foreign_t
+pl_sqlite_shutdown(void)
+{
+    return (SQLITE_OK == sqlite3_shutdown());
+}
+
 /* Connection blob */
 static int release_sqlite_connection(atom_t c);
 static int write_sqlite_connection(IOSTREAM *s, atom_t c, int flags);
@@ -322,8 +338,17 @@ static int db_from_handle(term_t db_handle, sqlite3 **db)
     return true;
 }
 
+static PL_option_t sqlite_prepare_options[] = {
+    PL_OPTION("bind_parameter_count", OPT_TERM),
+    PL_OPTION("rest", OPT_TERM),
+    PL_OPTIONS_END
+};
+
 foreign_t
-pl_sqlite_prepare(term_t db_handle, term_t sql_text, term_t stmt_handle)
+pl_sqlite_prepare(
+        term_t db_handle, term_t sql_text,
+        term_t stmt_handle,
+        term_t opts)
 {
     if (!PL_is_variable(stmt_handle))
         return PL_uninstantiation_error(stmt_handle);
@@ -340,10 +365,26 @@ pl_sqlite_prepare(term_t db_handle, term_t sql_text, term_t stmt_handle)
                 | REP_UTF8))
         return false;
 
+    term_t nbind = 0;
+    term_t sql_rest = 0;
+    if (!PL_scan_options(opts, OPT_ALL,
+                "sqlite_prepare_options", sqlite_prepare_options,
+                &nbind, &sql_rest))
+        return false;
+
     sqlite3_stmt *stmt;
-    /* Take only the first statement and ignore any trailing SQL */
-    if (SQLITE_OK != sqlite3_prepare_v2(db, sql, sql_len+1, &stmt, NULL))
-        return sqlite_error(db, "sqlite_prepare");
+    if (sql_rest) {
+        const char *rest;
+        if (SQLITE_OK != sqlite3_prepare_v2(db, sql, sql_len+1, &stmt, &rest))
+            return sqlite_error(db, "sqlite_prepare");
+        if (!PL_unify_chars(sql_rest, PL_STRING | REP_UTF8, -1, rest))
+            return false;
+    } else {
+        if (SQLITE_OK != sqlite3_prepare_v2(db, sql, sql_len+1, &stmt, NULL))
+            return sqlite_error(db, "sqlite_prepare");
+    }
+
+    if (NULL == stmt) return false;
 
 /* Do not allow SQL parameter list with gaps or anonymous variables
 
@@ -361,8 +402,13 @@ pl_sqlite_prepare(term_t db_handle, term_t sql_text, term_t stmt_handle)
     SQL = "Select 2, 3".
 
     Note that the first bind value is not used at all!
-    */
-    for (int i = 1; i <= sqlite3_bind_parameter_count(stmt); i++)
+*/
+    int bind_parameter_count = sqlite3_bind_parameter_count(stmt);
+    if (nbind) {
+        if (!PL_unify_integer(nbind, bind_parameter_count))
+            return false;
+    }
+    for (int i = 1; i <= bind_parameter_count; i++)
         if (!sqlite3_bind_parameter_name(stmt, i)) {
             sqlite3_finalize(stmt);
             return swiplite_error(
@@ -372,8 +418,7 @@ pl_sqlite_prepare(term_t db_handle, term_t sql_text, term_t stmt_handle)
     stmt_data *sd = PL_malloc(sizeof(stmt_data));
     sd->state = STMT_READY;
     sd->stmt = stmt;
-    return PL_unify_blob(stmt_handle, sd, sizeof(*sd),
-            &stmt_blob);
+    return PL_unify_blob(stmt_handle, sd, sizeof(*sd), &stmt_blob);
 }
 
 /* Finalize statement */
@@ -916,14 +961,26 @@ pl_sqlite_db_status(term_t db_handle,
     int r = false;
     if (!PL_get_bool_ex(reset, &r)) return false;
 
-    int c;
-    int h;
+#if SQLITE_VERSION_NUMBER < 3051001
+# define STATUS_TYPE int
+# define STATUS_FETCH sqlite3_db_status
+# define STATUS_UNIFY PL_unify_integer
+#else
+# define STATUS_TYPE int64_t
+# define STATUS_FETCH sqlite3_db_status64
+# define STATUS_UNIFY PL_unify_int64
+#endif
+    STATUS_TYPE c;
+    STATUS_TYPE h;
 
-    int sqlite_r = sqlite3_db_status(db, code, &c, &h, r);
+    int sqlite_r = STATUS_FETCH(db, code, &c, &h, r);
     if (SQLITE_OK != sqlite_r)
         return swiplite_error("sqlite_db_status", sqlite3_errstr(sqlite_r));
 
-    return (PL_unify_integer(current, c) && PL_unify_integer(highwater, h));
+    return (STATUS_UNIFY(current, c) && STATUS_UNIFY(highwater, h));
+#undef STATUS_TYPE
+#undef STATUS_FETCH
+#undef STATUS_UNIFY
 }
 
 static atom_t SQLITE_STMTSTATUS_fullscan_step;
@@ -1021,9 +1078,11 @@ install_swiplite()
     SWIPLITE_atom_row = PL_new_atom("row");
     SWIPLITE_atom_cols = PL_new_atom("cols");
 
+    PL_register_foreign("sqlite_initialize", 0, pl_sqlite_initialize, 0);
+    PL_register_foreign("sqlite_shutdown", 0, pl_sqlite_shutdown, 0);
     PL_register_foreign("sqlite_open", 3, pl_sqlite_open, 0);
     PL_register_foreign("sqlite_close", 1, pl_sqlite_close, 0);
-    PL_register_foreign("sqlite_prepare", 3, pl_sqlite_prepare, 0);
+    PL_register_foreign("sqlite_prepare", 4, pl_sqlite_prepare, 0);
     PL_register_foreign("sqlite_finalize", 1, pl_sqlite_finalize, 0);
     PL_register_foreign("sqlite_bind", 2, pl_sqlite_bind, 0);
     PL_register_foreign("sqlite_reset", 1, pl_sqlite_reset, 0);

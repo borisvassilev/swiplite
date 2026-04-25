@@ -45,7 +45,7 @@ and `sqlite_row/2`.
 
 ### Using a literal in an SQL statement
 If we would prepare a statement and execute it:
-```
+```prolog
 sqlite_prepare(DB,
     "INSERT INTO TABLE t VALUES ( 'foo', 12, 3.5 )", S),
 sqlite_do(S)
@@ -57,7 +57,7 @@ apply. This means that for example, an integer literal outside of
 the range for an 8-byte signed integer will be represented as a
 REAL internally. The original integer value is lost and cannot be
 retrieved.
-```
+```prolog
 ?- setup_call_cleanup(
        sqlite_open(foo, DB, [mode(write),memory(true)]),
        (   sqlite_command(DB, "create table kv ( k text primary key, v ) without rowid"),
@@ -159,3 +159,15 @@ The library provides access to the following functions:
 
 Those are implemented in `sqlite_status/4`, `sqlite_db_status/5`, and
 `sqlite_stmt_status/4`.
+
+## Database configuration
+There are now bindings for:
+
+* `sqlite3_initialize()`: `sqlite_initialize/0`
+* `sqlite3_shutdown()`: `sqlite_shutdown/0`
+
+I find it [difficult to tell](https://www.sqlite.org/c3ref/initialize.html)
+if my code is supposed to call these explicitly.
+
+At some point I might need bindings for `sqlite3_config()` and
+`sqlite3_db_config()`.

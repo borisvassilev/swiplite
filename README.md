@@ -17,7 +17,12 @@ This has been developed and tested on Linux and Mac OS.
 
 You might already have a decently recent version of SQLite
 installed; you can also install it using the package manager
-for your OS.
+for your OS. On MacOS, it is strongly recommended to install
+SQLite [from Homebrew](https://formulae.brew.sh/formula/sqlite)
+and make sure this library is linked against it. The default
+SQLite that comes with MacOS is somewhat out of date and seems
+to be compiled with questionable flags, probably for backwards
+compatibility.
 
 Finally, since this package contains C code, you need CMake
 and a C compiler.
@@ -54,36 +59,10 @@ $ swipl pack install swiplite-<version>.tgz
 If you prefer to use the SQLite source provided on
 [SQLite's download page](https://www.sqlite.org/download.html),
 you can do it by first checking out its own branch,
-`sqlite3-amalgamation`, then dropping the two files
-`sqlite3.c` and `sqlite3.h` in the `c/` subdirectory.
-
-You can first check the diff:
-```
-$ git checkout sqlite3-amalgamation
-Switched to branch 'sqlite3-amalgamation'
-Your branch is up to date with 'origin/sqlite3-amalgamation'.
-
-$ git diff main
-diff --git a/CMakeLists.txt b/CMakeLists.txt
-
-# Create the library as a CMake module
--add_library(swiplite MODULE c/swiplite.c)
-+add_library(swiplite MODULE c/swiplite.c c/sqlite3.c)
-
--find_package(SQLite3 REQUIRED)
--target_link_libraries(swiplite PRIVATE ${SQLite3_LIBRARIES})
--target_include_directories(swiplite PRIVATE ${SQLite3_INCLUDE_DIRS})
-
-diff --git a/c/swiplite.c b/c/swiplite.c
-
- #include <SWI-Prolog.h>
- #include <SWI-Stream.h>
--#include <sqlite3.h>
-+#include "sqlite3.h"
-```
-
+`sqlite3-amalgamation`.
 Once you add the two files you will find in the
-[amalgamation](https://www.sqlite.org/amalgamation.html)
+[amalgamation](https://www.sqlite.org/amalgamation.html),
+`sqlite3.c` and `sqlite3.h`, in the `c/` subdirectory,
 you should see:
 ```
 $ git status
@@ -108,7 +87,7 @@ To check that you have installed the add-on correctly:
 true.
 
 ?- sqlite_version(V).
-V = '3.47.2'.
+V = '3.53.0'.
 ```
 
 The predicate `sqlite_version/1` opens an in-memory SQLite
@@ -155,3 +134,33 @@ It is very likely that prepared statements are not _that_
 important. On the other hand, there is the cautionary tale
 of [Little Bobby Tables](https://xkcd.com/327/).
 
+I have described one bug and feature in SQLITEDOC.md, in
+"Using a literal in an SQL statement": a Prolog integer that
+does not fit in an 8-byte signed integer will be silently
+converted to an SQLite REAL, and the original value will be
+irreversibly lost. In contrast, if you use a prepared statement
+as provided by this library, swiplite, and you attempt to
+bind an integer that does not fit, you will get a run-time
+error.
+
+## Further work
+This library has been used by me for about a year at this point
+of time (2026-04-25) and it has served me well, for the very
+limited purposes I have had. A couple of features I would
+sometimes wish I would have had:
+
+ * Transparent support for all data types in SWI-Prolog. As it
+   is right now, you need to stringify large integers, rational
+   numbers, compound terms, and so on, before inserting them in
+   your SQLite database, and re-create them when you retrieve
+   them.
+ * An efficient transparent support for compound terms not based
+   on stringifying.
+ * A clean high-level interface. The main reason I have not
+   provided it publicly is that I am not sure what might be
+   generally useful to others and the work involved is too boring.
+
+In addition, the CMakeLists.txt currently provided in this
+library _happens to work_ for the two machines I have in daily use.
+In the unlikely case that someone else wants to use this library
+they might be able to propose improvements.
