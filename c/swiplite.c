@@ -896,8 +896,8 @@ pl_sqlite_status(term_t op, term_t current, term_t highwater, term_t reset)
     int r = false;
     if (!PL_get_bool_ex(reset, &r)) return false;
 
-    int64_t c;
-    int64_t h;
+    sqlite_int64 c;
+    sqlite_int64 h;
 
     int sqlite_r = sqlite3_status64(code, &c, &h, r);
     if (SQLITE_OK != sqlite_r)
@@ -966,7 +966,7 @@ pl_sqlite_db_status(term_t db_handle,
 # define STATUS_FETCH sqlite3_db_status
 # define STATUS_UNIFY PL_unify_integer
 #else
-# define STATUS_TYPE int64_t
+# define STATUS_TYPE sqlite_int64
 # define STATUS_FETCH sqlite3_db_status64
 # define STATUS_UNIFY PL_unify_int64
 #endif
