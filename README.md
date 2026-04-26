@@ -134,7 +134,7 @@ It is very likely that prepared statements are not _that_
 important. On the other hand, there is the cautionary tale
 of [Little Bobby Tables](https://xkcd.com/327/).
 
-I have described one bug and feature in SQLITEDOC.md, in
+I have described [one bug and feature](SQLITEDOC.md), in
 "Using a literal in an SQL statement": a Prolog integer that
 does not fit in an 8-byte signed integer will be silently
 converted to an SQLite REAL, and the original value will be
